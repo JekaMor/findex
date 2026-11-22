@@ -19,6 +19,7 @@ dependencies = [
     "fastapi>=0.165.0",
     "httpx>=0.28.1",
     "jinja2>=3.1.6",
+    "numpy>=2.5.5",
     "pydantic-settings>=2.16.3",
     "rich>=15.0.0",
     "typer>=0.29.2",
@@ -43,8 +44,13 @@ dev = [
     "hypothesis>=6.170.17",
     "pyright[nodejs]>=1.1.414",
     "pytest>=9.2.0",
+    "pytest-benchmark>=5.3.1",
     "pytest-cov>=7.1.0",
     "ruff>=0.17.3",
+]
+profile = [
+    "py-spy>=0.4.4",
+    "scalene>=2.4.0",
 ]
 
 [tool.pyright]
