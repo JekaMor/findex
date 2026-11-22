@@ -11,9 +11,8 @@ import logging
 import sys
 import time
 import tracemalloc
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from importlib.metadata import version
-from itertools import islice
 from pathlib import Path
 from typing import Annotated, Final, NoReturn, TypedDict
 
@@ -26,9 +25,9 @@ from rich.table import Table
 from rich.text import Text
 
 from findex.boolean import EngineName
-from findex.corpus import Document, iter_documents
-from findex.index import build_index
-from findex.model import Index, Layout
+from findex.corpus import corpus_paths
+from findex.model import Index
+from findex.parallel import ExecutorName, build_parallel, gil_enabled
 from findex.query import Node, QueryError, parse
 from findex.search import SCORERS, ScorerName, SearchResult, search
 from findex.snippets import Part, snippet_parts
@@ -50,6 +49,9 @@ out = Console()
 err = Console(stderr=True)
 
 LEVELS: Final = (logging.WARNING, logging.INFO, logging.DEBUG)
+# The benchmark (README, Lab 5): with the GIL, processes are fastest; on a
+# free-threaded build threads are, with no pickling and no process start-up.
+DEFAULT_EXECUTOR: Final[ExecutorName] = "processes" if gil_enabled() else "threads"
 _handler: logging.Handler | None = None
 
 
@@ -126,15 +128,6 @@ def main(
 # --- findex index ----------------------------------------------------------------
 
 
-def _with_progress(
-    docs: Iterable[Document], progress: Progress, total: int
-) -> Iterator[Document]:
-    task = progress.add_task("indexing", total=total)
-    for doc in docs:
-        yield doc
-        progress.advance(task)
-
-
 @app.command("index")
 def index_command(
     corpus: Annotated[
@@ -152,9 +145,17 @@ def index_command(
     limit: Annotated[
         int | None, typer.Option(min=1, help="Only the first N documents.")
     ] = None,
-    layout: Annotated[
-        Layout, typer.Option(help="How postings are held in memory while building.")
-    ] = "slots",
+    executor: Annotated[
+        ExecutorName,
+        typer.Option(
+            help="Run the chunks in a loop, a thread pool or a process pool. "
+            "Default: processes, or threads on a free-threaded (no-GIL) Python."
+        ),
+    ] = DEFAULT_EXECUTOR,
+    workers: Annotated[
+        int | None,
+        typer.Option(min=1, help="Threads or processes. Default: os.cpu_count()."),
+    ] = None,
     fmt: Annotated[
         Format | None,
         typer.Option("--format", help="Default: pickle for .pkl, binary otherwise."),
@@ -163,12 +164,9 @@ def index_command(
     """Build an index from a corpus directory and save it."""
     if not corpus.is_dir():
         fail(f"corpus directory not found: {corpus}")
-    total = sum(1 for _ in corpus.rglob("*.txt"))
-    if limit is not None:
-        total = min(total, limit)
-    log.info("indexing %d documents from %s", total, corpus)
+    paths = corpus_paths(corpus)[:limit]
+    log.info("indexing %d documents from %s", len(paths), corpus)
 
-    started = time.perf_counter()
     with Progress(
         "[progress.description]{task.description}",
         BarColumn(),
@@ -176,9 +174,15 @@ def index_command(
         TimeElapsedColumn(),
         console=err,
     ) as progress:
-        docs = islice(iter_documents(corpus), limit)
-        index = build_index(_with_progress(docs, progress, total), layout, positions)
-    built = time.perf_counter() - started
+        task = progress.add_task("indexing", total=len(paths))
+        report = build_parallel(
+            paths,
+            executor,
+            workers,
+            positions,
+            on_chunk=lambda chunk: progress.advance(task, len(chunk.paths)),
+        )
+    index = report.index
 
     started = time.perf_counter()
     try:
@@ -197,7 +201,10 @@ def index_command(
     table.add_row("positions", "yes" if index.positions else "no")
     table.add_row("format", used)
     table.add_row("file size", f"{out_path.stat().st_size / 2**20:.1f} MiB")
-    table.add_row("build", f"{built:.2f} s")
+    table.add_row(
+        "build", f"{report.wall:.2f} s ({report.executor}, {report.workers} workers)"
+    )
+    table.add_row("of which merge", f"{report.merge:.2f} s")
     table.add_row("save", f"{saved:.2f} s")
     out.print(table)
 
