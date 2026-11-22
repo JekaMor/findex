@@ -1,7 +1,7 @@
 [project]
 name = "findex"
 version = "0.1.0"
-description = "Course search engine: streaming corpus intake and tokenizer"
+description = "Course search engine: streaming corpus intake, tokenizer and inverted index"
 readme = "README.md"
 authors = [
     { name = "Мороз Євген", email = "8109517@stud.kai.edu.ua" }
