@@ -1,0 +1,155 @@
+{
+ "meta": {
+  "python": "3.14.10",
+  "free_threaded_build": true,
+  "machine": "Intel(R) Core(TM) i5-1035G1 CPU @ 1.00GHz (4 cores, 8 threads)",
+  "cpu_count": 8,
+  "platform": "Windows-10-10.0.19045-SP0"
+ },
+ "rows": [
+  {
+   "label": "free-threaded",
+   "executor": "serial",
+   "workers": 1,
+   "runs": 3,
+   "gil": false,
+   "wall": 6.156551399995806,
+   "cpu": 6.171875,
+   "peak_rss": 150093824.0,
+   "merge": 0.08090940001420677,
+   "wall_all": [
+    6.230695000005653,
+    6.156551399995806,
+    6.01331979999668
+   ]
+  },
+  {
+   "label": "free-threaded",
+   "executor": "threads",
+   "workers": 1,
+   "runs": 3,
+   "gil": false,
+   "wall": 6.22208700000192,
+   "cpu": 6.21875,
+   "peak_rss": 147636224.0,
+   "merge": 0.1116743000166025,
+   "wall_all": [
+    6.0757052000262775,
+    6.22208700000192,
+    6.247578400012571
+   ]
+  },
+  {
+   "label": "free-threaded",
+   "executor": "threads",
+   "workers": 2,
+   "runs": 3,
+   "gil": false,
+   "wall": 3.9324812999984715,
+   "cpu": 7.171875,
+   "peak_rss": 185655296.0,
+   "merge": 0.16490699999849312,
+   "wall_all": [
+    3.812774400023045,
+    3.9657669000152964,
+    3.9324812999984715
+   ]
+  },
+  {
+   "label": "free-threaded",
+   "executor": "threads",
+   "workers": 4,
+   "runs": 3,
+   "gil": false,
+   "wall": 3.0216881999804173,
+   "cpu": 9.109375,
+   "peak_rss": 252858368.0,
+   "merge": 0.23547479999251664,
+   "wall_all": [
+    2.9635741999954917,
+    3.040102500002831,
+    3.0216881999804173
+   ]
+  },
+  {
+   "label": "free-threaded",
+   "executor": "threads",
+   "workers": 8,
+   "runs": 3,
+   "gil": false,
+   "wall": 2.7823716000129934,
+   "cpu": 15.953125,
+   "peak_rss": 333737984.0,
+   "merge": 0.27379609999479726,
+   "wall_all": [
+    2.7823716000129934,
+    2.759784599998966,
+    2.947112699999707
+   ]
+  },
+  {
+   "label": "free-threaded",
+   "executor": "processes",
+   "workers": 1,
+   "runs": 3,
+   "gil": false,
+   "wall": 7.671944800007623,
+   "cpu": 7.65625,
+   "peak_rss": 178499584.0,
+   "merge": 0.11134430000674911,
+   "wall_all": [
+    7.929449399991427,
+    7.635727299988503,
+    7.671944800007623
+   ]
+  },
+  {
+   "label": "free-threaded",
+   "executor": "processes",
+   "workers": 2,
+   "runs": 3,
+   "gil": false,
+   "wall": 4.93403559998842,
+   "cpu": 9.296875,
+   "peak_rss": 195706880.0,
+   "merge": 0.18346589998691343,
+   "wall_all": [
+    4.932178399991244,
+    4.93403559998842,
+    5.111260300007416
+   ]
+  },
+  {
+   "label": "free-threaded",
+   "executor": "processes",
+   "workers": 4,
+   "runs": 3,
+   "gil": false,
+   "wall": 4.23303059997852,
+   "cpu": 14.015625,
+   "peak_rss": 220188672.0,
+   "merge": 0.25404209998669103,
+   "wall_all": [
+    4.089944199979072,
+    4.23303059997852,
+    5.185657900001388
+   ]
+  },
+  {
+   "label": "free-threaded",
+   "executor": "processes",
+   "workers": 8,
+   "runs": 3,
+   "gil": false,
+   "wall": 4.812264500011224,
+   "cpu": 27.140625,
+   "peak_rss": 240250880.0,
+   "merge": 0.30946719998610206,
+   "wall_all": [
+    5.025622899993323,
+    4.784370799985481,
+    4.812264500011224
+   ]
+  }
+ ]
+}
