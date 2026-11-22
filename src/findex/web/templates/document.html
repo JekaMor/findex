@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% macro doc_link(offset, label) -%}
+  <a href="/doc/{{ doc_id }}?q={{ q | urlencode }}&offset={{ offset }}">{{ label }}</a>
+{%- endmacro %}
+
+{% block title %}{{ meta.title }} · {{ site }}{% endblock %}
+
+{% block header %}
+  {% if q %}<a class="back" href="/?q={{ q | urlencode }}">← results for “{{ q }}”</a>{% endif %}
+{% endblock %}
+
+{% block content %}
+<article class="document">
+  <h1>{{ meta.title }}</h1>
+  <p class="meta">
+    {% if meta.url %}<a href="{{ meta.url }}" rel="nofollow noopener">{{ meta.url }}</a>{% else %}{{ source }}{% endif %}
+    · {{ '{:,}'.format(tokens) }} words
+    {% if part.chars %}· characters {{ '{:,}'.format(part.offset) }}–{{ '{:,}'.format(part.offset + (part.text | length)) }} of {{ '{:,}'.format(part.chars) }}{% endif %}
+  </p>
+
+  {% if part.text is none %}
+    <p class="error">The text of this document is not available on this server.</p>
+  {% else %}
+    <nav class="pages">
+      {% if part.offset > 0 %}{{ doc_link([0, part.offset - length] | max, '← Earlier') }}{% endif %}
+      {% if part.next_offset %}{{ doc_link(part.next_offset, 'Later →') }}{% endif %}
+    </nav>
+    <div class="text">{% for piece, is_term in parts %}{% if is_term %}<mark>{{ piece }}</mark>{% else %}{{ piece }}{% endif %}{% endfor %}</div>
+    <nav class="pages">
+      {% if part.offset > 0 %}{{ doc_link([0, part.offset - length] | max, '← Earlier') }}{% endif %}
+      {% if part.next_offset %}{{ doc_link(part.next_offset, 'Later →') }}{% endif %}
+    </nav>
+  {% endif %}
+</article>
+{% endblock %}

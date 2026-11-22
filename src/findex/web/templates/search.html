@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% macro snippet(parts) -%}
+  {%- for piece, is_term in parts -%}
+    {%- if is_term %}<mark>{{ piece }}</mark>{% else %}{{ piece }}{% endif -%}
+  {%- endfor -%}
+{%- endmacro %}
+
+{% macro page_link(n, label=None) -%}
+  <a href="/?q={{ q | urlencode }}&scorer={{ scorer }}&page={{ n }}">{{ label or n }}</a>
+{%- endmacro %}
+
+{% block title %}{% if q %}{{ q }} · {% endif %}{{ site }}{% endblock %}
+
+{% block content %}
+<form class="search" action="/" method="get" role="search">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search {{ '{:,}'.format(documents) }} documents"
+         aria-label="Query" autofocus maxlength="200">
+  <select name="scorer" aria-label="Ranking">
+    <option value="bm25" {% if scorer == 'bm25' %}selected{% endif %}>BM25</option>
+    <option value="tfidf" {% if scorer == 'tfidf' %}selected{% endif %}>TF-IDF</option>
+  </select>
+  <button type="submit">Search</button>
+</form>
+<p class="syntax">
+  Words are ANDed. Also <code>OR</code>, <code>NOT</code>, <code>( )</code> and <code>"exact phrases"</code>.
+</p>
+
+{% if error %}
+  <p class="error">Can't read that query: {{ error }}.</p>
+{% elif found %}
+  <p class="meta">
+    {% if found.total %}
+      {{ '{:,}'.format(found.total) }} document{{ '' if found.total == 1 else 's' }}
+      · page {{ found.page }} of {{ found.pages }}
+    {% else %}
+      Nothing found
+    {% endif %}
+    · {{ '%.1f' | format(found.took_ms) }} ms
+    · <span class="parsed" title="How the query was read">{{ found.node }}</span>
+  </p>
+
+  <ol class="results" start="{{ (found.page - 1) * found.k + 1 }}">
+  {% for hit in found.hits %}
+    <li>
+      <div class="head">
+        <a class="title" href="/doc/{{ hit.result.doc_id }}?q={{ q | urlencode }}">{{ hit.result.title }}</a>
+        <span class="score" title="{{ scorer | upper }} score">{{ '%.2f' | format(hit.result.score) }}</span>
+      </div>
+      <div class="source">{{ hit.source }}</div>
+      <p class="snippet">{{ snippet(hit.parts) }}</p>
+    </li>
+  {% endfor %}
+  </ol>
+
+  {% if found.pages > 1 %}
+  <nav class="pages" aria-label="Pages">
+    {% if found.page > 1 %}{{ page_link(found.page - 1, '← Previous') }}{% endif %}
+    {% for n in range([1, found.page - 3] | max, ([found.pages, found.page + 3, 100] | min) + 1) %}
+      {% if n == found.page %}<span class="current">{{ n }}</span>{% else %}{{ page_link(n) }}{% endif %}
+    {% endfor %}
+    {% if found.page < found.pages and found.page < 100 %}{{ page_link(found.page + 1, 'Next →') }}{% endif %}
+  </nav>
+  {% endif %}
+{% else %}
+  <section class="examples">
+    <h2>Try</h2>
+    <ul>
+      {% for example in ['white whale', '"dead man" treasure', 'love NOT war', 'vampire OR werewolf', 'monster (creature OR fiend)'] %}
+        <li><a href="/?q={{ example | urlencode }}">{{ example }}</a></li>
+      {% endfor %}
+    </ul>
+  </section>
+{% endif %}
+{% endblock %}

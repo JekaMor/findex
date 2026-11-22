@@ -563,6 +563,79 @@ def crawl_command(
     out.print(table)
 
 
+# --- findex serve -----------------------------------------------------------------
+
+
+def uvicorn_log_config(level: str) -> dict[str, Any]:
+    """One line per record on stdout, where container platforms collect logs."""
+    line = {"format": "%(asctime)s %(levelname)-7s %(name)s: %(message)s"}
+    stdout = {
+        "class": "logging.StreamHandler",
+        "formatter": "line",
+        "stream": "ext://sys.stdout",
+    }
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {"line": line},
+        "handlers": {"stdout": stdout},
+        "loggers": {
+            "uvicorn": {"handlers": ["stdout"], "level": "INFO", "propagate": False},
+            "uvicorn.access": {"handlers": [], "propagate": False},
+            "findex": {"handlers": ["stdout"], "level": level, "propagate": False},
+        },
+    }
+
+
+@app.command("serve")
+def serve_command(
+    index_path: Annotated[
+        Path | None,
+        typer.Option("--index", envvar="INDEX_PATH", help="Index file to serve."),
+    ] = None,
+    host: Annotated[
+        str, typer.Option(envvar="HOST", help="Address to bind.")
+    ] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535, envvar="PORT")] = 8000,
+    workers: Annotated[
+        int,
+        typer.Option(min=1, envvar="WEB_CONCURRENCY", help="Server processes."),
+    ] = 1,
+) -> None:
+    """Serve the web page and the JSON API (uvicorn + FastAPI)."""
+    import uvicorn
+    from pydantic import ValidationError
+
+    from findex.web.settings import Settings
+
+    if index_path is not None:
+        # Through the environment, so every uvicorn worker process sees it too.
+        os.environ["INDEX_PATH"] = str(index_path)
+    try:
+        settings = Settings()
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        where = ".".join(str(part) for part in first["loc"]).upper()
+        fail(f"bad configuration: {where}: {first['msg']}")
+    log.info(
+        "serving %s on http://%s:%d with %d worker(s)",
+        settings.index_path,
+        host,
+        port,
+        workers,
+    )
+    uvicorn.run(
+        "findex.web.app:app",
+        host=host,
+        port=port,
+        workers=workers,
+        log_config=uvicorn_log_config(settings.log_level),
+        access_log=False,  # the app logs each request itself, with its id
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
+
+
 # --- findex stats ----------------------------------------------------------------
 
 
