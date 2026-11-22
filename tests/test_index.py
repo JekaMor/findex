@@ -13,10 +13,15 @@ def docs(*texts):
 
 
 def test_posting_and_docmeta_are_frozen_slotted_and_hashable():
-    for record in (Posting(1, 2), DocMeta("a.txt", "A")):
-        assert not hasattr(record, "__dict__")
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            record.title = "x"  # type: ignore[misc]
+    posting, meta = Posting(1, 2), DocMeta("a.txt", "A")
+    assert not hasattr(posting, "__dict__")
+    assert not hasattr(meta, "__dict__")
+    # Assign a real field: for a name that is not a field, CPython 3.14 versions
+    # differ (FrozenInstanceError or a TypeError from inside dataclasses).
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        posting.tf = 3  # type: ignore[misc]  # the point: frozen must refuse it
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        meta.title = "x"  # type: ignore[misc]  # the point: frozen must refuse it
     assert len({Posting(1, 2), Posting(1, 2), Posting(1, 3)}) == 2
     assert len({DocMeta("a.txt", "A"), DocMeta("a.txt", "A")}) == 1
 
