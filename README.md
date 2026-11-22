@@ -6,6 +6,8 @@
   завантажуючи все в пам'ять.
 - **Лаба 2:** будуємо інвертований індекс, зберігаємо його на диск і шукаємо булевими
   запитами.
+- **Лаба 3:** індекс стає об'єктом «як у Python», пошук повертає ранжований список
+  (TF-IDF, BM25), з'являються мова запитів з дужками й фразами та сніпети.
 
 ## Корпус
 
@@ -32,7 +34,14 @@ uv run python -m findex.stats data/ --eager      # версія зі списк�
 uv run python -m findex.index data/ --out index.bin          # побудувати й зберегти
 uv run python -m findex.search index.bin "whale ship"        # знайти
 uv run python -m findex.search index.bin "Alice OR Sherlock" --engine set
-uv run python scripts/measure_index.py data                  # усі таблиці нижче
+uv run python scripts/measure_index.py data                  # таблиці лаби 2
+
+# Лаба 3: ранжований пошук
+uv run python -m findex.search index.bin 'sea AND (pirate OR treasure) NOT whale "dead man"'
+uv run python -m findex.search index.bin "whale" --scorer tfidf -k 5
+uv run python -m findex.search index.bin "whale" "whale" -v   # лог часу і кешу
+uv run python scripts/ranking_checks.py index.bin            # три перевірки рейтингу
+uv run python scripts/evaluate.py index.bin                  # precision@5
 ```
 
 `findex.stats` виводить кількість документів і токенів, розмір словника, топ-50 слів,
@@ -47,13 +56,21 @@ uv run python scripts/measure_index.py data                  # усі табли
 - `src/findex/tokenize.py` — `tokenize`: генератор токенів.
 - `src/findex/stats.py` — підрахунок статистики (ледачий і жадібний варіанти) та
   команда `python -m findex.stats`.
-- `src/findex/model.py` — `Posting`, `DocMeta`, `Index` і варіанти зберігання постінгів.
+- `src/findex/model.py` — `Posting`, `DocMeta`, варіанти зберігання постінгів і клас
+  `Index`.
 - `src/findex/index.py` — `build_index` (один прохід по потоку документів) і команда
   `python -m findex.index`.
-- `src/findex/search.py` — булевий пошук (merge і set) і команда `python -m findex.search`.
-- `src/findex/store.py` — `save`/`load`: pickle і власний бінарний формат.
-- `scripts/measure_index.py` — вимірювання для таблиць лаби 2.
-- `tests/` — 76 тестів.
+- `src/findex/boolean.py` — злиття відсортованих списків (AND/OR/NOT) і рушії merge/set.
+- `src/findex/query.py` — парсер мови запитів і вузли `Term`, `Phrase`, `And`, `Or`, `Not`.
+- `src/findex/scoring.py` — `Scorer`, `TfIdf`, `BM25`.
+- `src/findex/search.py` — ранжований пошук, `SearchResult` і команда
+  `python -m findex.search`.
+- `src/findex/snippets.py` — сніпети з підсвіченими словами.
+- `src/findex/store.py` — `save`/`load`/`open_index`: pickle і власний бінарний формат.
+- `src/findex/timing.py` — декоратор `@timed`.
+- `scripts/` — завантаження корпусу і скрипти, що рахують усі таблиці в цьому README.
+- `eval/queries.toml` — 10 запитів з ручною розміткою для precision@5.
+- `tests/` — 151 тест.
 
 ---
 
@@ -121,7 +138,8 @@ uv run python scripts/measure_index.py data                  # усі табли
 хешуються, і їх можна класти в `set` (це перевіряють тести).
 
 Прапорець `--positions` додатково зберігає позиції слова в документі. Вони знадобляться
-для пошуку фраз у лабі 3. Прапорець `--layout {slots,plain,array}` вибирає, як
+для пошуку фраз у лабі 3 (з лаби 3 вони ввімкнені за замовчуванням, вимкнути можна
+`--no-positions`). Прапорець `--layout {slots,plain,array}` вибирає, як
 постінги лежать у пам'яті (див. таблицю нижче).
 
 ### Пошук
@@ -135,8 +153,12 @@ uv run python scripts/measure_index.py data                  # усі табли
 Оператори пишуться великими літерами, а `or` малими — це звичайне слово. Слова запиту
 проходять той самий токенізатор, що й корпус, тому `Alice's` знайде `alice's`.
 
+> У лабі 3 цей розбір зліва направо замінено справжнім парсером з пріоритетами й
+> дужками (див. нижче). Запити з двох слів, на яких зроблено бенчмарк, обидва розбирають
+> однаково.
+
 `--engine merge` йде двома вказівниками по відсортованих списках `doc_id` (функції
-`intersect`, `union`, `difference` у `search.py`). `--engine set` перетворює кожен
+`intersect`, `union`, `difference`, тепер у `boolean.py`). `--engine set` перетворює кожен
 список на `set` і використовує `&`, `|`, `-`, а в кінці один раз сортує результат.
 Обидва варіанти дають однакові відповіді, це теж перевіряють тести.
 
@@ -258,3 +280,227 @@ uv run python scripts/measure_index.py data                  # усі табли
 тут не видно. Вони проявляються на великих індексах: merge не хешує, читає списки
 послідовно (можна читати прямо зі стиснутого файлу) і зберігає порядок, який
 знадобиться для пошуку фраз у лабі 3.
+
+---
+
+## Лаба 3. Ранжування і модель об'єктів
+
+### `Index` поводиться як словник
+
+`Index` успадковує `collections.abc.Mapping`. Я реалізував лише три обов'язкові методи
+(`__getitem__`, `__len__`, `__iter__`), а `get`, `keys`, `items`, `values` і `==`
+`Mapping` дає сам. Ще є `__contains__` (стандартний робив би `self[term]`, а для
+відображеного з диска індексу це зайве читання постінгів) і `__repr__`.
+
+```python
+>>> with open_index(Path("index.bin")) as index:
+...     index
+...     len(index), "whale" in index, index.df("whale"), index.num_docs
+...     index["queequeg"][0]
+...     index["qwertyuiop"]
+Index(terms=68_213, docs=40, layout='array', positions=True)
+(68213, True, 9, 40)
+Posting(doc_id=22, tf=226, positions=(715, 13887, 13938, ...))
+KeyError: 'qwertyuiop'
+>>> index
+Index(closed)
+```
+
+- **Властивості документів:** `num_docs` — це `@property`. `avg_doc_length` — це
+  `@functools.cached_property`: BM25 читає її для кожного постінгу, а рахується вона
+  один раз, бо після першого звернення значення лежить у `__dict__` об'єкта. Є також
+  `doc_length(doc_id)` і `df(term)`.
+- **`ArrayPostings` — це `Sequence[Posting]`.** Масиви з лаби 2 при читанні віддають
+  об'єкти `Posting` на льоту, тож код скорингу й фраз однаковий для всіх способів
+  зберігання (duck typing).
+- **`open_index(path)` — контекстний менеджер на `@contextmanager`.** Бінарний файл він
+  не читає цілком, а відображає в пам'ять через `mmap`. Одразу розбирається тільки
+  заголовок, а постінги слова читаються з файлу, коли до них звертаються. Тому
+  відкриття займає 0,3 с замість повного завантаження. У блоці `finally` індекс
+  закривається, а з ним `mmap` і файл, навіть якщо всередині `with` стався виняток.
+  Тест це перевіряє: після винятку файл можна видалити, а на Windows це неможливо,
+  поки файл відображений. Після закриття будь-яке звернення до індексу кидає
+  `ValueError`.
+
+### Скорери
+
+`Scorer` — це `typing.Protocol`: будь-що, що можна викликати як
+`scorer(term, posting, index) -> float`. `TfIdf` і `BM25` — класи з `__call__`, і жоден
+не успадковує `Scorer`. Звичайна функція з такою сигнатурою теж підходить (є тест).
+
+- **TF-IDF:** `tf · log(N / df)`.
+- **BM25:** `idf · tf · (k1 + 1) / (tf + k1 · (1 − b + b · dl / avgdl))`, де
+  `idf = log(1 + (N − df + 0.5) / (df + 0.5))`, `k1 = 1.5`, `b = 0.75`.
+  - `k1` задає, як швидко насичується частота: внесок одного слова ніколи не
+    перевищить `idf · (k1 + 1)`.
+  - `b` задає штраф за довжину: при `b = 0` довжина документа не враховується взагалі.
+
+`search(index, query, scorer=BM25(), k=10)` спочатку бере документи, що підходять під
+булевий запит. Потім кожне слово запиту додає бали своїм документам, а `heapq.nlargest`
+вибирає k найкращих за O(n log k) без повного сортування. Результат — список
+`SearchResult(score, doc_id, title, path)` з `order=True`. Бал стоїть першим полем, а
+`title` і `path` у порівнянні не беруть участі, тому `sorted(results)` сортує за балом.
+
+### Три перевірки рейтингу на моєму корпусі
+
+Числа з `python scripts/ranking_checks.py index.bin`. Середня довжина книги — 131 905 слів.
+
+**1. Рідкісне слово важить більше за часте.** Запит `love OR yearling`. `love` є в 39
+книгах із 40, `yearling` — лише у двох, і там по одному разу.
+
+| BM25 | Книга | слів | tf(love) | tf(yearling) | бал |
+|---|---|---|---|---|---|
+| 1 | A Modest Proposal | 6 570 | 1 | 1 | 4,95 |
+| 2 | Anna Karenina | 355 264 | 434 | 1 | 1,68 |
+| 3 | The Brothers Karamazov | 355 732 | 467 | 0 | 0,09 |
+| 4 | The Picture of Dorian Gray | 82 906 | 111 | 0 | 0,09 |
+
+Обидві книги з `yearling` стоять першими. 467 повторень `love` дають Karamazov лише 0,09,
+бо в BM25 `idf(love)` майже нульовий, а внесок одного слова обмежений зверху. Для
+порівняння, TF-IDF із сирим tf тут помиляється: на першому місці Anna Karenina, далі
+Karamazov (11,82) і War and Peace (11,54), де `yearling` немає, а A Modest Proposal
+навіть не потрапляє в топ-5. Там 456 × log(40/39) переважує 1 × log(40/2).
+
+**2. Двадцяте повторення майже нічого не додає.** Слово `whale` у Moby Dick (насправді
+tf = 1114), а tf виставлено вручну, довжина документа та сама:
+
+| tf | BM25 | приріст | TF-IDF | приріст |
+|---|---|---|---|---|
+| 1 | 1,124 | +1,124 | 1,492 | +1,492 |
+| 2 | 1,719 | +0,595 | 2,983 | +1,492 |
+| 10 | 2,984 | +0,060 | 14,917 | +1,492 |
+| 20 | 3,286 | **+0,017** | 29,833 | +1,492 |
+| 100 | 3,575 | +0,001 | 149,165 | +1,492 |
+
+У BM25 20-те входження додає 1,5% від першого, а в TF-IDF кожне додає однаково.
+
+**3. Короткий документ з одним входженням вище за довгий.** Слово `absentees` є лише у
+двох книгах, по одному разу:
+
+| Книга | слів | tf | BM25 | TF-IDF |
+|---|---|---|---|---|
+| A Modest Proposal | 6 570 | 1 | **4,89** | 3,00 |
+| War and Peace | 570 015 | 1 | 1,12 | 3,00 |
+
+BM25 ділить tf на довжину відносно середньої, тому коротка книга виграє в 4 рази.
+TF-IDF довжини не знає і ставить нічию. Ці три властивості також перевіряються тестами на
+маленьких штучних корпусах (`tests/test_scoring.py`), разом із `b = 0`, коли нічия
+повертається.
+
+### Мова запитів
+
+Парсер рекурсивного спуску в `query.py`: по одному методу на кожне правило граматики, від
+найслабшого оператора до найсильнішого:
+
+```
+or_expr  := and_expr ("OR" and_expr)*
+and_expr := not_expr (["AND"] not_expr)*      два слова поруч = AND
+not_expr := "NOT" not_expr | atom
+atom     := СЛОВО | "фраза в лапках" | "(" or_expr ")"
+```
+
+Результат — дерево з вузлів `Term`, `Phrase`, `And`, `Or`, `Not`. Це заморожені
+dataclass-и, тому дерева порівнюються через `==`, хешуються, і тести перевіряють саме
+дерева, а не рядки:
+
+```python
+parse("a OR b c") == Or(Term("a"), And(Term("b"), Term("c")))   # True
+parse("a OR b c") == Term("a") | Term("b") & Term("c")          # True: &, |, ~
+```
+
+`a OR b c` — це `Or(a, And(b, c))`, бо AND зв'язує сильніше за OR, як `*` сильніше за
+`+`. `or_expr` спершу викликає `and_expr`, і той забирає `b c` цілком, перш ніж
+`or_expr` побачить наступний `OR`.
+
+Кожен вузол має `evaluate(index)`. `Term` бере список `doc_id`, `And`/`Or`/`Not`
+зливають списки функціями з лаби 2, а `a AND NOT b` рахується як різниця, без
+доповнення до всіх документів. `Phrase` спершу бере документи, де є всі слова, а потім
+двома вказівниками по позиціях перевіряє, що за позицією `p` першого слова йде `p + 1`
+другого. Для фраз потрібні позиції, тому з лаби 3 індекс будується з ними за
+замовчуванням. Якщо позицій немає, фраза кидає `QueryError`.
+
+### `@timed`, кеш і сніпети
+
+`@timed` (`timing.py`, з `functools.wraps`) стоїть на `build_index`, `load`, `search` і
+`Index.match` та пише час у лог `findex.timing`. `Index.match` (запит → `doc_id`)
+кешується через `@functools.lru_cache(maxsize=256)`. Кеш створюється окремо для кожного
+індексу як замикання в `__init__`. Якби `lru_cache` стояв на методі класу, `self` став
+би частиною ключа, і кеш тримав би кожен індекс у пам'яті, доки там лишаються його
+запити. Ключ кешу — розібране дерево, тому `Dead Man` і `dead  man` влучають в один
+запис. `close()` очищає кеш.
+
+Два однакові запити з `-v` (вивід скорочено):
+
+```
+$ python -m findex.search index.bin 'sea AND (pirate OR treasure) NOT whale "dead man"' \
+                                    'sea AND (pirate OR treasure)  NOT whale "Dead Man"' -k 3 -v
+  [log] load took 313.6 ms
+index:        Index(terms=68_213, docs=40, layout='array', positions=True)  (0.314 s)
+scorer:       BM25(k1=1.5, b=0.75)
+
+query:        sea AND (pirate OR treasure) NOT whale "dead man"
+  [log] match (((sea AND (pirate OR treasure)) AND NOT whale) AND "dead man") [merge]: 12 docs, computed
+  [log] Index.match took 17.8 ms
+  [log] search took 27.5 ms
+parsed:       (((sea AND (pirate OR treasure)) AND NOT whale) AND "dead man")
+  1.   4.776  The Adventures of Tom Sawyer, Complete  (pg74.txt)
+       …I’ve been pretty much so, too, Huck. They most always put in a **dead** **man** when they bury a **treasure** under a tree, to look out for it.” “Lordy!” “Yes, they do.…
+  2.   4.595  Treasure Island  (pg120.txt)
+       …enow,” said the old **man** Morgan. “Fair! I reckon so,” said the **sea**-cook. “You lost the ship; I found the **treasure**. Who’s the better **man** at that? And now I…
+  3.   3.547  Great Expectations  (pg1400.txt)
+       …**dead** if you don’t!” said the **man**. I said so, and he took me down. “Now,” he pursued, “you remember what you’ve undertook, and you remember that young **man**,…
+
+query:        sea AND (pirate OR treasure)  NOT whale "Dead Man"
+  [log] match (((sea AND (pirate OR treasure)) AND NOT whale) AND "dead man") [merge]: 12 docs, cache hit
+  [log] Index.match took 0.2 ms
+  [log] search took 11.4 ms
+```
+
+Під час повторного запиту `Index.match` бере результат з кешу: 0,2 мс замість 17,8 мс.
+Решта часу `search` — це підрахунок балів, він не кешується. Один нюанс я помітив, поки
+міряв. `StreamHandler` після кожного рядка логу викликає `flush()`, і якщо в буфері
+лежали сніпети попереднього запиту, їхній запис потрапляв у заміряний час (кеш тоді
+«займав» 9 мс). Тому CLI скидає буфер після кожного запиту.
+
+**Сніпети** (`snippets.py`) показують вікно ±80 символів навколо місця, де на 160
+символах трапляється найбільше різних слів запиту (а за рівності — найбільше збігів).
+Вікно шукається двома вказівниками за один прохід. Краї не розрізають слова, переноси
+рядків стискаються в пробіли, а слова запиту обгортаються в `**…**` (у терміналі
+підсвічуються кольором). Шукати місце допомагає `token_spans()`: той самий токенізатор,
+що віддає ще й позиції символів.
+
+### precision@5: TF-IDF проти BM25
+
+10 запитів, для яких я заздалегідь записав, які книги мають бути в топ-5
+(`eval/queries.toml`). Слова з'єднано через `OR`, щоб вирішував рейтинг, а не булевий
+фільтр. Рахує `python scripts/evaluate.py index.bin`.
+
+| Запит | Релевантних | TF-IDF | BM25 | Максимум |
+|---|---|---|---|---|
+| `sea OR ship OR voyage OR captain` | 3 | 0,6 | 0,6 | 0,6 |
+| `pirate OR treasure` | 3 | 0,6 | 0,4 | 0,6 |
+| `sovereign OR commonwealth OR power` | 3 | 0,4 | 0,4 | 0,6 |
+| `slavery OR negro OR freedom` | 2 | 0,2 | 0,4 | 0,4 |
+| `scientist OR experiment OR transformation` | 3 | 0,0 | 0,2 | 0,6 |
+| `monster OR creature` | 2 | 0,4 | 0,4 | 0,4 |
+| `marriage OR fortune OR estate` | 3 | 0,2 | 0,4 | 0,6 |
+| `vampire OR blood OR count` | 1 | 0,2 | 0,2 | 0,2 |
+| `martians OR invasion` | 1 | 0,2 | 0,2 | 0,2 |
+| `war OR army OR napoleon` | 1 | 0,2 | 0,2 | 0,2 |
+| **середнє** | | **0,30** | **0,34** | 0,44 |
+
+«Максимум» — це найкраще можливе P@5: якщо релевантних книг лише 1, навіть ідеальний
+рейтинг дає 1/5 = 0,2.
+
+BM25 трохи кращий (0,34 проти 0,30 при можливих 0,44). Він виграв там, де TF-IDF
+витягав нагору довгі книги, у яких слово просто часто трапляється: на
+`marriage OR fortune OR estate` TF-IDF поставив першими Монте-Крісто й «Війну і мир».
+P@5 рахує лише, чи потрапила книга в п'ятірку, тому не бачить і порядку: на
+`vampire OR blood OR count` BM25 ставить Dracula першим, а TF-IDF — третім, після
+Монте-Крісто (там слово `count` трапляється сотні разів) і «Війни і миру», хоча P@5
+однаковий. Програв BM25 на `pirate OR treasure`: Монте-Крісто (469 тисяч слів)
+отримав штраф за довжину, і його витіснили з п'ятірки книги, де `treasure` трапляється
+лише кілька разів. Якщо ті самі запити написати без `OR`, тобто з неявним AND, середні
+падають до 0,28 і 0,30. Наприклад, `scientist experiment transformation` знаходить лише
+2 книги, і серед них немає жодної релевантної. Вибірка маленька, тому різниця в 0,04 —
+це один-два документи. Головне, що тепер рейтинг можна міряти, а не оцінювати на око.

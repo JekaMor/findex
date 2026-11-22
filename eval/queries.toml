@@ -1,0 +1,76 @@
+# Hand-labelled queries for precision@5: python scripts/evaluate.py index.bin
+#
+# "relevant" = the books that should be in the top 5 for this query.
+# Words are joined with OR: the scorer, not the Boolean filter, should decide.
+
+[[query]]
+q = "sea OR ship OR voyage OR captain"
+relevant = [
+    "pg2701.txt",  # Moby Dick
+    "pg120.txt",   # Treasure Island
+    "pg1184.txt",  # The Count of Monte Cristo
+]
+
+[[query]]
+q = "pirate OR treasure"
+relevant = [
+    "pg120.txt",   # Treasure Island
+    "pg74.txt",    # Tom Sawyer (plays pirates, finds the treasure)
+    "pg1184.txt",  # The Count of Monte Cristo (the treasure of Monte Cristo)
+]
+
+[[query]]
+q = "sovereign OR commonwealth OR power"
+relevant = [
+    "pg1232.txt",  # The Prince
+    "pg3207.txt",  # Leviathan
+    "pg1497.txt",  # The Republic
+]
+
+[[query]]
+q = "slavery OR negro OR freedom"
+relevant = [
+    "pg76.txt",    # Huckleberry Finn
+    "pg408.txt",   # The Souls of Black Folk
+]
+
+[[query]]
+q = "scientist OR experiment OR transformation"
+relevant = [
+    "pg84.txt",    # Frankenstein
+    "pg43.txt",    # Dr. Jekyll and Mr. Hyde
+    "pg5230.txt",  # The Invisible Man
+]
+
+[[query]]
+q = "monster OR creature"
+relevant = [
+    "pg84.txt",    # Frankenstein
+    "pg16328.txt", # Beowulf
+]
+
+[[query]]
+q = "marriage OR fortune OR estate"
+relevant = [
+    "pg1342.txt",  # Pride and Prejudice
+    "pg1260.txt",  # Jane Eyre
+    "pg768.txt",   # Wuthering Heights
+]
+
+[[query]]
+q = "vampire OR blood OR count"
+relevant = [
+    "pg345.txt",   # Dracula
+]
+
+[[query]]
+q = "martians OR invasion"
+relevant = [
+    "pg36.txt",    # The War of the Worlds
+]
+
+[[query]]
+q = "war OR army OR napoleon"
+relevant = [
+    "pg2600.txt",  # War and Peace
+]
