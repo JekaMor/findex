@@ -47,6 +47,12 @@ findex stats data/ --eager                            # те саме поток
 `-v` вмикає INFO-лог, `-vv` — DEBUG (час кожного `@timed`-виклику, влучення в кеш).
 Логи, смуга прогресу й помилки йдуть у stderr, результати — у stdout.
 
+> **Windows PowerShell 5.1** губить подвійні лапки всередині аргументу, тому
+> `'"dead man"'` доходить до `findex` як `dead man`: це вже не фраза, а AND двох слів.
+> Запит із фразою там треба передавати після `--%`:
+> `findex --% search index.bin "sea AND (pirate OR treasure) NOT whale \"dead man\""`.
+> У Git Bash, cmd і PowerShell 7 приклади вище працюють як є.
+
 Для розробки:
 
 ```bash
