@@ -135,7 +135,11 @@ def test_repeated_query_is_a_cache_hit_in_the_debug_log(index_file: Path) -> Non
         ),
         (["search", "INDEX", '"open quote'], 2, "unclosed quote"),
         (["search", "NOT_AN_INDEX", "whale"], 1, "is not a findex index file"),
-        (["index", "no-such-dir"], 1, "corpus directory not found: no-such-dir"),
+        (
+            ["index", "no-such-dir"],
+            1,
+            "no corpus directory or .jsonl file at no-such-dir",
+        ),
         (["stats", "nowhere"], 1, "no such index file or corpus directory: nowhere"),
         (["stats", "NOT_AN_INDEX"], 1, "is not a findex index file"),
     ],
