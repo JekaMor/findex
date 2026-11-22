@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    name: checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install (Python version from .python-version, deps from uv.lock)
+        run: uv sync --locked
+      - name: ruff check
+        run: uv run ruff check .
+      - name: ruff format
+        run: uv run ruff format --check .
+      - name: pyright (strict)
+        run: uv run pyright
+      - name: pytest
+        run: uv run pytest --cov --cov-report=term
+      - name: Build the wheel and run it in a clean environment
+        shell: bash
+        run: |
+          uv build
+          uvx --from dist/findex-*.whl findex --help

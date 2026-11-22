@@ -1,5 +1,7 @@
 # findex
 
+[![CI](https://github.com/JekaMor/findex/actions/workflows/ci.yml/badge.svg)](https://github.com/JekaMor/findex/actions/workflows/ci.yml)
+
 Пошуковий рушій з курсу Python, по кроку на кожну лабу.
 
 - **Лаба 1:** читаємо корпус потоком, ріжемо на токени й рахуємо статистику, не
@@ -8,6 +10,18 @@
   запитами.
 - **Лаба 3:** індекс стає об'єктом «як у Python», пошук повертає ранжований список
   (TF-IDF, BM25), з'являються мова запитів з дужками й фразами та сніпети.
+- **Лаба 4:** `findex` стає інструментом: одна команда з підкомандами, типи під pyright
+  strict, тести з Hypothesis, пакунок, CI і реліз.
+
+## Встановлення
+
+```bash
+uv tool install https://github.com/JekaMor/findex/releases/download/v0.4.0/findex-0.4.0-py3-none-any.whl
+findex --help
+```
+
+Або з клону репозиторію: `uv tool install .` Без встановлення можна запустити так:
+`uvx --from <шлях або URL до .whl> findex --help`.
 
 ## Корпус
 
@@ -18,59 +32,63 @@
 python scripts/download_corpus.py data
 ```
 
-## Як запустити
+## Як користуватися
 
 ```bash
-uv sync
-uv run pytest
-uv run ruff check .
-
-# Лаба 1: статистика корпусу
-uv run python -m findex.stats data/              # ледача версія, один прохід
-uv run python -m findex.stats data/ --limit 5    # тільки перші 5 документів
-uv run python -m findex.stats data/ --eager      # версія зі списками, для порівняння
-
-# Лаба 2: індекс і пошук
-uv run python -m findex.index data/ --out index.bin          # побудувати й зберегти
-uv run python -m findex.search index.bin "whale ship"        # знайти
-uv run python -m findex.search index.bin "Alice OR Sherlock" --engine set
-uv run python scripts/measure_index.py data                  # таблиці лаби 2
-
-# Лаба 3: ранжований пошук
-uv run python -m findex.search index.bin 'sea AND (pirate OR treasure) NOT whale "dead man"'
-uv run python -m findex.search index.bin "whale" --scorer tfidf -k 5
-uv run python -m findex.search index.bin "whale" "whale" -v   # лог часу і кешу
-uv run python scripts/ranking_checks.py index.bin            # три перевірки рейтингу
-uv run python scripts/evaluate.py index.bin                  # precision@5
+findex index data/ --out index.bin                    # побудувати індекс (смуга прогресу)
+findex search index.bin 'sea AND (pirate OR treasure) NOT whale "dead man"'
+findex search index.bin whale --scorer tfidf --k 5    # інший скорер, 5 результатів
+findex search index.bin whale --json > hits.jsonl     # JSON lines у stdout, для jq тощо
+findex -vv search index.bin whale whale               # лог часу й кешу (у stderr)
+findex stats index.bin                                # документи, токени, словник, топ-50
+findex stats data/ --eager                            # те саме потоком по корпусу (лаба 1)
 ```
 
-`findex.stats` виводить кількість документів і токенів, розмір словника, топ-50 слів,
-час роботи та піковий об'єм пам'яті. `findex.index` і `findex.search` теж друкують час і
-пікову пам'ять.
+`-v` вмикає INFO-лог, `-vv` — DEBUG (час кожного `@timed`-виклику, влучення в кеш).
+Логи, смуга прогресу й помилки йдуть у stderr, результати — у stdout.
+
+Для розробки:
+
+```bash
+uv sync                      # оточення з uv.lock
+uv run pytest                # усі тести; -m "not slow" — без повільних
+uv run pytest --cov          # з покриттям
+uv run ruff check . && uv run ruff format --check .
+uv run pyright               # strict
+uv build                     # dist/findex-0.4.0-py3-none-any.whl
+
+uv run python scripts/measure_index.py data      # таблиці лаби 2
+uv run python scripts/ranking_checks.py index.bin  # три перевірки рейтингу (лаба 3)
+uv run python scripts/evaluate.py index.bin      # precision@5 (лаба 3)
+```
 
 ## Що де лежить
 
+- `src/findex/cli.py` — команда `findex` (typer + rich): `index`, `search`, `stats`.
+  Тут і тільки тут налаштовується логування.
 - `src/findex/corpus.py` — `iter_documents`: генератор, який віддає по одному
   `.txt` файлу. Якщо файл із битим UTF-8, пише в лог і читає із заміною символів. Якщо
   файл зник посеред читання, пише в лог і йде далі.
 - `src/findex/tokenize.py` — `tokenize`: генератор токенів.
-- `src/findex/stats.py` — підрахунок статистики (ледачий і жадібний варіанти) та
-  команда `python -m findex.stats`.
+- `src/findex/stats.py` — статистика корпусу (ледачий і жадібний варіанти) та сама
+  статистика з готового індексу.
 - `src/findex/model.py` — `Posting`, `DocMeta`, варіанти зберігання постінгів і клас
   `Index`.
-- `src/findex/index.py` — `build_index` (один прохід по потоку документів) і команда
-  `python -m findex.index`.
+- `src/findex/index.py` — `build_index` (один прохід по потоку документів).
 - `src/findex/boolean.py` — злиття відсортованих списків (AND/OR/NOT) і рушії merge/set.
 - `src/findex/query.py` — парсер мови запитів і вузли `Term`, `Phrase`, `And`, `Or`, `Not`.
 - `src/findex/scoring.py` — `Scorer`, `TfIdf`, `BM25`.
-- `src/findex/search.py` — ранжований пошук, `SearchResult` і команда
-  `python -m findex.search`.
+- `src/findex/search.py` — ранжований пошук і `SearchResult`.
 - `src/findex/snippets.py` — сніпети з підсвіченими словами.
 - `src/findex/store.py` — `save`/`load`/`open_index`: pickle і власний бінарний формат.
 - `src/findex/timing.py` — декоратор `@timed`.
-- `scripts/` — завантаження корпусу і скрипти, що рахують усі таблиці в цьому README.
+- `scripts/` — завантаження корпусу і скрипти, що рахують таблиці в цьому README.
 - `eval/queries.toml` — 10 запитів з ручною розміткою для precision@5.
-- `tests/` — 151 тест.
+- `tests/` — 181 тест, `tests/conftest.py` — спільний маленький корпус.
+
+> До лаби 4 кожен модуль мав свою команду (`python -m findex.stats`,
+> `python -m findex.index`, `python -m findex.search`). Тепер це підкоманди `findex`.
+> Нижче в розділах лаб 1–3 старі команди лишилися такими, якими їх запускали тоді.
 
 ---
 
@@ -404,8 +422,8 @@ dataclass-и, тому дерева порівнюються через `==`, х
 дерева, а не рядки:
 
 ```python
-parse("a OR b c") == Or(Term("a"), And(Term("b"), Term("c")))   # True
-parse("a OR b c") == Term("a") | Term("b") & Term("c")          # True: &, |, ~
+parse("a OR b c") == Or(Term("a"), And(Term("b"), Term("c")))  # True
+parse("a OR b c") == Term("a") | Term("b") & Term("c")  # True: &, |, ~
 ```
 
 `a OR b c` — це `Or(a, And(b, c))`, бо AND зв'язує сильніше за OR, як `*` сильніше за
@@ -504,3 +522,188 @@ P@5 рахує лише, чи потрапила книга в п'ятірку, 
 падають до 0,28 і 0,30. Наприклад, `scientist experiment transformation` знаходить лише
 2 книги, і серед них немає жодної релевантної. Вибірка маленька, тому різниця в 0,04 —
 це один-два документи. Головне, що тепер рейтинг можна міряти, а не оцінювати на око.
+
+---
+
+## Лаба 4. Типи, тести, пакунок, CLI
+
+### Команда `findex`
+
+`cli.py` — застосунок typer із трьома підкомандами. Аргументи й опції typer бере з
+анотацій типів, тож `Literal["bm25", "tfidf"]` одразу стає списком дозволених значень
+у `--help` і перевіркою введення.
+
+```
+$ findex search index.bin 'sea AND (pirate OR treasure) NOT whale "dead man"' --k 3
+                         sea AND (pirate OR treasure) NOT whale "dead man"
+┌───┬───────┬─────────────────────┬───────────────────────────────────────────────────────────────┐
+│ # │ score │ document            │ snippet                                                       │
+├───┼───────┼─────────────────────┼───────────────────────────────────────────────────────────────┤
+│ 1 │ 4.776 │ The Adventures of   │ …I’ve been pretty much so, too, Huck. They most always put in │
+│   │       │ Tom Sawyer,         │ a dead man when they bury a treasure under a tree, to look    │
+│   │       │ Complete            │ out for it.” “Lordy!” “Yes, they do.…                         │
+│   │       │ pg74.txt            │                                                               │
+│ 2 │ 4.595 │ Treasure Island     │ …enow,” said the old man Morgan. “Fair! I reckon so,” said    │
+│   │       │ pg120.txt           │ the sea-cook. “You lost the ship; I found the treasure. Who’s │
+│   │       │                     │ the better man at that? And now I…                            │
+│ 3 │ 3.547 │ Great Expectations  │ …dead if you don’t!” said the man. I said so, and he took me  │
+│   │       │ pg1400.txt          │ down. “Now,” he pursued, “you remember what you’ve undertook, │
+│   │       │                     │ and you remember that young man,…                             │
+└───┴───────┴─────────────────────┴───────────────────────────────────────────────────────────────┘
+                  (((sea AND (pirate OR treasure)) AND NOT whale) AND "dead man")
+```
+
+У терміналі слова запиту в сніпетах підсвічені жовтим. Для цього `snippets.py` тепер
+віддає сніпет шматками з позначкою «це слово запиту», і rich фарбує їх сам. Тому символ
+`[` у тексті книги не сприймається як розмітка rich.
+
+- **`findex index`** показує смугу прогресу rich (у stderr), а в кінці друкує таблицю:
+  документи, слова, постінги, розмір файлу, час.
+- **`findex search`** друкує таблицю на кожен запит. `--json` пише в stdout по одному
+  JSON-об'єкту на рядок (`query`, `rank`, `doc_id`, `score`, `title`, `path`, `snippet`;
+  описано як `TypedDict`), тож `findex search … --json | jq .title` працює.
+- **`findex stats`** з файлом індексу показує числа першої лаби, взяті з постінгів, а з
+  папкою корпусу рахує їх потоком, як у лабі 1 (`--eager` — версія зі списками).
+
+**Очікувані помилки** — це один рядок у stderr, ненульовий код виходу і жодного стеку
+викликів:
+
+```
+$ findex search nope.bin whale                 # код 1
+error: index file not found: nope.bin
+$ findex search index.bin 'whale AND (ship'    # код 2
+error: bad query 'whale AND (ship': missing )
+$ findex search README.md whale                # код 1
+error: README.md is not a findex index file
+```
+
+Синтаксис усіх запитів перевіряється до того, як відкривається індекс. Код 2 означає
+помилку в запиті, код 1 — проблему з файлами.
+
+### Логування
+
+У бібліотеці кожен модуль бере `logging.getLogger(__name__)` і нічого не налаштовує.
+Налаштування одне, у `configure_logging()` у `cli.py`: обробник `RichHandler` пише в
+stderr. Без прапорця видно тільки попередження (наприклад, про битий UTF-8 у файлі
+корпусу), `-v` додає INFO, `-vv` — DEBUG. `@timed` і повідомлення кешу пишуть на рівні
+DEBUG.
+
+```
+$ findex -vv search index.bin '…"dead man"' '…"Dead Man"' --json --no-snippets --k 1 > /dev/null
+DEBUG    findex.timing: load took 56.5 ms
+INFO     findex.cli: opened Index(terms=68_213, docs=40, layout='array', positions=True)
+DEBUG    findex.timing: Index._lookup took 2.1 ms
+DEBUG    findex.model: match (((sea AND (pirate OR treasure)) AND NOT whale) AND "dead man") [merge]: 12 docs, computed
+DEBUG    findex.timing: search took 4.8 ms
+DEBUG    findex.timing: Index._lookup took 0.0 ms
+DEBUG    findex.model: match (((sea AND (pirate OR treasure)) AND NOT whale) AND "dead man") [merge]: 12 docs, cache hit
+DEBUG    findex.timing: search took 2.1 ms
+```
+
+Скрізь у логах лінивий `%`-формат (`log.debug("%s took %.1f ms", …)`): рядок
+збирається, тільки якщо рівень увімкнений. Із лаби 3 тут змінилося одне: рядок
+`cache hit` раніше писався всередині заміряної функції, і запис у консоль потрапляв у
+час. Тепер `@timed` стоїть лише на пошуку в кеші (`Index._lookup`), а лог пишеться
+після нього.
+
+У `print` не лишилося жодного діагностичного виводу. Через `print` (`out.print`)
+виводяться тільки результати команд, а скрипти в `scripts/` друкують таблиці для README.
+
+### Типи: pyright strict
+
+`[tool.pyright] typeCheckingMode = "strict"` для `src/`: **0 помилок**. Що для цього
+знадобилося:
+
+- **`Scorer`** — `typing.Protocol`, і `TfIdf`/`BM25` проходять перевірку без
+  наслідування. Під час перевірки pyright знайшов справжню невідповідність: скорер
+  приймав `Posting`, а в індексі могли лежати й `PlainPosting`. Тепер скорер приймає
+  протокол `PostingLike` (`doc_id`, `tf`, `positions` лише для читання), якому
+  структурно відповідають обидва класи. `PostingList` — це `Sequence[PostingLike]`.
+- **`Engine[T]`** став generic-класом із синтаксисом PEP 695: у merge-рушія операнд
+  має тип `Sequence[int]`, у set-рушія `set[int]`. `Node.operand[T](…, eng: Engine[T]) -> T`
+  тримає тип однаковим по всьому дереву запиту. Раніше тут був `Any`.
+- **`Literal`** для рядкових варіантів: `EngineName`, `ScorerName`, `Layout`, `Format`.
+  Typer бере з них і варіанти для CLI.
+- **`TypedDict`** для JSON-заголовка бінарного індексу (`Header`) і для рядка `--json`.
+- **`@overload`** на `ArrayPostings.__getitem__`: `int` повертає `Posting`, `slice` —
+  `list[Posting]`.
+- **Генератори** анотовані як `Iterator[...]`, а приймають `Iterable[...]`.
+- **`@contextmanager`** тепер повертає `Generator[Index]`, бо typeshed позначив варіант
+  з `Iterator` застарілим, і strict-режим це ловить.
+
+Є два виходи за межі перевірки, обидва з поясненням у коді:
+
+- **`cast(Header, json.loads(...))`** у `store.py`: `json.loads` повертає `Any`, а цей
+  JSON ми самі записали з `Header`.
+- **`# pyright: ignore[reportPrivateUsage]`** у `model.py`: у typeshed тип результату
+  `cache_info()` має лише приватне ім'я `functools._CacheInfo`.
+
+Тести pyright не перевіряє (`include = ["src"]`), а ruff перевіряє весь репозиторій.
+
+### Тести
+
+**181 тест**, `uv run pytest` проходить за ~4 с:
+
+| Файл | Тестів | Що перевіряє |
+|---|---|---|
+| `test_tokenize.py` | 18 | таблиця `parametrize`: Unicode (кирилиця, CJK, грецька, `ß`, комбінована діакритика), апострофи, дефіси, цифри |
+| `test_query.py` | 61 | парсер (порівняння дерев), помилки синтаксису, обчислення на обох рушіях |
+| `test_cli.py` | 23 | `CliRunner`: усі три команди, `--json`, `-vv`, помилки (код виходу, один рядок, без стеку викликів) |
+| `test_store.py` | 18 | save/load у двох форматах і трьох layout-ах, `open_index` при винятку |
+| `test_index.py` | 12 | збірка, сортування постінгів, позиції, назви |
+| `test_search.py`, `test_scoring.py` | 16 | ранжування; три перевірки з лаби 3 як тести |
+| `test_properties.py` | 6 | **Hypothesis**, див. нижче |
+| решта | 27 | `Index` як `Mapping`, сніпети, `@timed`, корпус, статистика, merge |
+
+`tests/conftest.py` дає маленький корпус на диску (`corpus_dir`), індекс із нього
+(`corpus_index`) і його файл (`index_file`). Усі три мають `scope="session"`, тобто
+будуються один раз за прогін, тому тести їх не змінюють. Тест, якому треба змінити
+індекс, будує власний через фікстуру `make_index`.
+
+**Властивості Hypothesis** (`test_properties.py`) перевіряють не приклади, а
+твердження на сотнях згенерованих входів:
+
+1. **Merge** збігається з `set` для будь-яких двох відсортованих списків (`intersect`,
+   `union`, `difference`).
+2. **Постінги** для будь-якого корпусу, layout-у й прапорця позицій завжди відсортовані
+   за `doc_id` і без повторів, `tf > 0`, кількість позицій дорівнює `tf`, а довжина
+   документа — сумі його `tf`.
+3. **`load(save(index))`** дає той самий індекс для обох форматів і всіх трьох
+   layout-ів.
+4. **Токенізатор** ніколи не дає порожнього токена, і `tokenize(" ".join(tokens)) == tokens`.
+5. **Дерево запиту** після `str()` і `parse()` збігається з початковим.
+6. **Рушії merge і set** дають однакову відповідь для будь-якого дерева запиту на
+   будь-якому корпусі.
+
+Позначкою `slow` позначено один тест довший за секунду (властивість 2, ~1,9 с).
+`uv run pytest -m "not slow"` його пропускає.
+
+**Покриття: 98%** (`uv run pytest --cov`, з гілками). Що не покрито і чому:
+
+- `__main__.py` (2 рядки): `python -m findex` запускає окремий процес, а тести
+  викликають `app` напряму через `CliRunner`.
+- `store.py`: `byteswap()` для big-endian машин (на x86 і ARM-ноутбуках цей шлях не
+  виконується), прибирання `mmap` і файлу, якщо відображення чи читання заголовка
+  впали посередині, і pickle-файл, у якому лежить не `Index`.
+- `cli.py`: помилка запису файлу індексу (диск заповнений, немає прав), яку важко
+  відтворити однаково на Windows і Linux, і випадок, коли stdout — не звичайний
+  текстовий потік (під `CliRunner` він завжди звичайний).
+- `model.py`: доступ за індексом до `ArrayPostings` без позицій (ітерація покрита,
+  `plist[i]` ні). `search.py`: `SearchResult.__str__`, бо CLI тепер малює таблицю.
+
+### Пакунок, CI, реліз
+
+- **`pyproject.toml`** містить метадані (PEP 621), залежності (`typer`, `rich`), групу
+  `dev` (`pytest`, `pytest-cov`, `hypothesis`, `pyright`, `ruff`), налаштування pyright,
+  pytest і coverage, а також `[project.scripts] findex = "findex.cli:app"`.
+  `uv.lock` закомічено.
+- **`[project.scripts]`** при встановленні wheel створює в теці `bin/` (на Windows —
+  `Scripts\findex.exe`) маленьку програму-обгортку, яка імпортує `findex.cli` і викликає
+  `app()`. Відкрийте `findex-0.4.0.dist-info/entry_points.txt` у wheel — там цей рядок.
+- **CI** (`.github/workflows/ci.yml`) запускається на push і PR, на Ubuntu і Windows,
+  і виконує по черзі: `uv sync --locked` → `ruff check` → `ruff format --check` →
+  `pyright` → `pytest --cov` → `uv build` і `uvx --from dist/*.whl findex --help`.
+  Останній крок — це перевірка «з чистого оточення»: wheel ставиться в порожнє
+  ізольоване середовище.
+- **Реліз** [v0.4.0](https://github.com/JekaMor/findex/releases/tag/v0.4.0) з
+  прикріпленим `findex-0.4.0-py3-none-any.whl`.
