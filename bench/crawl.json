@@ -1,0 +1,70 @@
+{
+ "seed": "https://docs.python.org/3/library/",
+ "max_pages": 200,
+ "rows": [
+  {
+   "name": "c1",
+   "concurrency": 1,
+   "per_host": 1,
+   "delay": 0.05,
+   "pages": 200,
+   "requests": 200,
+   "errors": 0,
+   "skipped": 0,
+   "statuses": {
+    "200": 200
+   },
+   "wall": 23.247734400007175,
+   "pages_per_s": 8.60298885726853,
+   "peak_rss": 47202304
+  },
+  {
+   "name": "c5",
+   "concurrency": 5,
+   "per_host": 5,
+   "delay": 0.05,
+   "pages": 200,
+   "requests": 200,
+   "errors": 0,
+   "skipped": 0,
+   "statuses": {
+    "200": 200
+   },
+   "wall": 12.847954700002447,
+   "pages_per_s": 15.566680041295749,
+   "peak_rss": 48082944
+  },
+  {
+   "name": "c20",
+   "concurrency": 20,
+   "per_host": 20,
+   "delay": 0.05,
+   "pages": 200,
+   "requests": 201,
+   "errors": 0,
+   "skipped": 0,
+   "statuses": {
+    "200": 200
+   },
+   "wall": 12.338735900004394,
+   "pages_per_s": 16.209115878712403,
+   "peak_rss": 48107520
+  },
+  {
+   "name": "c20-polite",
+   "concurrency": 20,
+   "per_host": 2,
+   "delay": 0.25,
+   "pages": 200,
+   "requests": 200,
+   "errors": 0,
+   "skipped": 0,
+   "statuses": {
+    "200": 200
+   },
+   "wall": 51.49585799998022,
+   "pages_per_s": 3.8838075093355435,
+   "peak_rss": 47792128
+  }
+ ]
+}

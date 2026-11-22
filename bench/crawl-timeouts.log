@@ -1,0 +1,5 @@
+2026-11-22 22:56:11,401 INFO    findex.crawler.fetch: https://docs.python.org/robots.txt: timeout after 0.1 s, retry 1/3 in 0.92 s
+2026-11-22 22:56:12,448 INFO    findex.crawler.fetch: https://docs.python.org/robots.txt: timeout after 0.1 s, retry 2/3 in 1.82 s
+2026-11-22 22:56:14,386 INFO    findex.crawler.fetch: https://docs.python.org/robots.txt: timeout after 0.1 s, retry 3/3 in 2.59 s
+2026-11-22 22:56:17,101 WARNING findex.crawler.robots: robots.txt of https://docs.python.org unavailable (timeout after 0.1 s): not crawling it
+2026-11-22 22:56:17,108 INFO    findex.crawler.urls: --- https://docs.python.org/3/library/ robots.txt disallows
