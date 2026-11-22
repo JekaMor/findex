@@ -8,9 +8,10 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from findex.boolean import difference, intersect, union
-from findex.corpus import Document
+from findex.corpus import Document, read_documents
 from findex.index import build_index
 from findex.model import LAYOUTS, Index, Layout, to_arrays
+from findex.parallel import build_partial, chunks, merge
 from findex.query import And, Node, Not, Or, Phrase, Term, parse
 from findex.store import load, save
 from findex.tokenize import tokenize
@@ -125,3 +126,20 @@ def test_merge_and_set_engines_agree(tree: Node, corpus: list[str]) -> None:
     index = build(corpus, "slots", positions=True)
 
     assert tree.evaluate(index, "merge") == tree.evaluate(index, "set")
+
+
+@settings(deadline=None, max_examples=40)
+@given(corpora, st.integers(1, 7))
+def test_any_chunking_merges_to_the_serial_index(corpus: list[str], count: int) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        paths = []
+        for i, text in enumerate(corpus):
+            path = root / f"d{i}.txt"
+            path.write_text(text, encoding="utf-8")
+            paths.append(path)
+        serial = build_index(read_documents(paths), "array", positions=True)
+
+        merged = merge(build_partial(c) for c in chunks(paths, count))
+
+        assert plain(merged) == plain(serial)

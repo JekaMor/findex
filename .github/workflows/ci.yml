@@ -32,3 +32,18 @@ jobs:
         run: |
           uv build
           uvx --from dist/findex-*.whl findex --help
+
+  free-threaded:
+    name: tests on free-threaded 3.14t (no GIL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install on the free-threaded build
+        run: uv sync --locked --python 3.14t
+      - name: The GIL is really off
+        run: uv run --python 3.14t python -c "import sys; print(sys.version); assert not sys._is_gil_enabled()"
+      - name: pytest
+        run: uv run --python 3.14t pytest
