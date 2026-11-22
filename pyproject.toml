@@ -1,13 +1,30 @@
 [project]
 name = "findex"
-version = "0.1.0"
-description = "Course search engine: streaming corpus intake, tokenizer and inverted index"
+version = "0.4.0"
+description = "A small full-text search engine: streaming tokenizer, inverted index, BM25 ranking, CLI"
 readme = "README.md"
 authors = [
     { name = "Мороз Євген", email = "8109517@stud.kai.edu.ua" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+keywords = ["search", "inverted-index", "bm25", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Text Processing :: Indexing",
+    "Typing :: Typed",
+]
+dependencies = [
+    "rich>=15.0.0",
+    "typer>=0.29.2",
+]
+
+[project.urls]
+Repository = "https://github.com/JekaMor/findex"
+
+[project.scripts]
+findex = "findex.cli:app"
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]
@@ -15,6 +32,32 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.170.17",
+    "pyright[nodejs]>=1.1.414",
     "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
     "ruff>=0.17.3",
+]
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+pythonVersion = "3.14"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers"]
+markers = ["slow: takes more than a second (deselect with -m 'not slow')"]
+
+[tool.coverage.run]
+source = ["findex"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = [
+    'if __name__ == "__main__":',
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
 ]

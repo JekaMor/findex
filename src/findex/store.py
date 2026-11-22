@@ -26,10 +26,10 @@ import mmap
 import pickle
 import sys
 from array import array
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal, TypedDict, cast
 
 from findex.model import ArrayPostings, DocMeta, Index, PostingList, to_arrays
 from findex.timing import timed
@@ -37,11 +37,25 @@ from findex.timing import timed
 type Buffer = bytes | memoryview | mmap.mmap
 
 Format = Literal["binary", "pickle"]
-FORMATS: tuple[Format, ...] = ("binary", "pickle")
+FORMATS: Final[tuple[Format, ...]] = ("binary", "pickle")
 MAGIC = b"FINDEX\x00\x01"
-_PICKLE_SUFFIXES = {".pkl", ".pickle"}
+_PICKLE_SUFFIXES: Final = frozenset({".pkl", ".pickle"})
+
+
+class Header(TypedDict):
+    """The JSON header of a binary index file."""
+
+    positions: bool
+    doc_lengths: list[tuple[int, int]]  # [doc_id, length]
+    doc_meta: list[tuple[int, str, str]]  # [doc_id, path, title]
+    terms: list[tuple[str, int, int, int]]  # [term, offset, postings, positions]
+
 
 assert array("I").itemsize == 4, "the binary format assumes 4-byte unsigned ints"
+
+
+class IndexFormatError(ValueError):
+    """The file exists but is not an index written by ``save``."""
 
 
 def format_for(path: Path) -> Format:
@@ -71,17 +85,17 @@ def load(path: Path, *, lazy: bool = False) -> Index:
     if head == MAGIC:
         return _open_mapped(path) if lazy else _load_binary(path)
     if not head.startswith(b"\x80"):
-        raise ValueError(f"{path} is not a findex index")
+        raise IndexFormatError(f"{path} is not a findex index file")
     # Trusted files only: see the module docstring.
     with path.open("rb") as f:
         index = pickle.load(f)
     if not isinstance(index, Index):
-        raise TypeError(f"{path} does not contain an Index")
+        raise IndexFormatError(f"{path} does not contain an Index")
     return index
 
 
 @contextmanager
-def open_index(path: Path) -> Iterator[Index]:
+def open_index(path: Path) -> Generator[Index]:
     """``with open_index(path) as index:`` -- the index is closed when the block
     ends, whether it finishes, returns or raises."""
     index = load(path, lazy=True)
@@ -116,25 +130,23 @@ def _from_little_endian(data: bytes | memoryview) -> array[int]:
 def _save_binary(index: Index, path: Path) -> None:
     # Offsets come from the lengths alone, so the header is written first and
     # the postings are then streamed out one term at a time.
-    terms = []
+    terms: list[tuple[str, int, int, int]] = []
     offset = 0
     for term, plist in index.postings.items():
         n, m = _counts(plist)
-        terms.append([term, offset, n, m])
+        terms.append((term, offset, n, m))
         offset += (2 * n + m) * 4
-    header = json.dumps(
-        {
-            "positions": index.positions,
-            "doc_lengths": list(index.doc_lengths.items()),
-            "doc_meta": [[i, m.path, m.title] for i, m in index.doc_meta.items()],
-            "terms": terms,
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
+    header: Header = {
+        "positions": index.positions,
+        "doc_lengths": list(index.doc_lengths.items()),
+        "doc_meta": [(i, m.path, m.title) for i, m in index.doc_meta.items()],
+        "terms": terms,
+    }
+    encoded = json.dumps(header, ensure_ascii=False).encode("utf-8")
     with path.open("wb") as f:
         f.write(MAGIC)
-        f.write(len(header).to_bytes(8, "little"))
-        f.write(header)
+        f.write(len(encoded).to_bytes(8, "little"))
+        f.write(encoded)
         for plist in index.postings.values():
             arrays = to_arrays(plist)
             f.write(_little_endian(arrays.doc_ids))
@@ -142,11 +154,14 @@ def _save_binary(index: Index, path: Path) -> None:
             f.write(_little_endian(arrays.positions))
 
 
-def _read_header(buf: Buffer) -> tuple[dict, int]:
+def _read_header(buf: Buffer) -> tuple[Header, int]:
     """(header, where the postings data starts)."""
     start = len(MAGIC) + 8
     header_len = int.from_bytes(buf[len(MAGIC) : start], "little")
-    header = json.loads(bytes(buf[start : start + header_len]))
+    # json.loads returns Any. We wrote this JSON ourselves in _save_binary from a
+    # Header, so cast says so (JSON arrays come back as lists; the code only
+    # unpacks them, which works the same for lists and tuples).
+    header = cast(Header, json.loads(bytes(buf[start : start + header_len])))
     return header, start + header_len
 
 
@@ -160,14 +175,18 @@ def _postings_at(buf: Buffer, at: int, n: int, m: int) -> ArrayPostings:
     )
 
 
-def _index_from(header: dict, postings: Mapping[str, PostingList], **kwargs) -> Index:
+def _index_from(
+    header: Header,
+    postings: Mapping[str, PostingList],
+    closer: Callable[[], None] | None = None,
+) -> Index:
     return Index(
         postings,
         {doc_id: length for doc_id, length in header["doc_lengths"]},
         {doc_id: DocMeta(p, title) for doc_id, p, title in header["doc_meta"]},
         layout="array",
         positions=header["positions"],
-        **kwargs,
+        closer=closer,
     )
 
 
@@ -184,7 +203,9 @@ def _load_binary(path: Path) -> Index:
 class MappedPostings(Mapping[str, ArrayPostings]):
     """term -> postings, read from a memory-mapped file only when asked for."""
 
-    def __init__(self, buf: mmap.mmap, base: int, terms: list) -> None:
+    def __init__(
+        self, buf: mmap.mmap, base: int, terms: list[tuple[str, int, int, int]]
+    ) -> None:
         self._buf = buf
         self._base = base
         self._where = {term: (offset, n, m) for term, offset, n, m in terms}

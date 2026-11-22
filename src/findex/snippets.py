@@ -1,11 +1,14 @@
 """Snippets: a window of text around the best match, with the terms marked."""
 
+import re
 import unicodedata
 from collections import Counter
 from collections.abc import Collection
 from typing import NamedTuple
 
 from findex.tokenize import token_spans
+
+_WHITESPACE = re.compile(r"\s+")
 
 
 class Hit(NamedTuple):
@@ -32,18 +35,17 @@ def _best_window(hits: list[Hit], width: int) -> tuple[int, int]:
     return best
 
 
-def snippet(
-    text: str,
-    terms: Collection[str],
-    radius: int = 80,
-    mark: tuple[str, str] = ("**", "**"),
-) -> str:
-    """About ``radius`` characters each side of the best match, terms wrapped in
-    ``mark``. Without a match: the start of the text."""
+type Part = tuple[str, bool]  # (text, is it a query term?)
+
+
+def snippet_parts(text: str, terms: Collection[str], radius: int = 80) -> list[Part]:
+    """About ``radius`` characters each side of the best match, as pieces of text
+    flagged when they are a query term. Without a match: the start of the text."""
     text = unicodedata.normalize("NFC", text)
     hits = [Hit(*span) for span in token_spans(text) if span[0] in terms]
     if not hits:
-        return _clean(text[: 2 * radius]) + ("…" if len(text) > 2 * radius else "")
+        tail = "…" if len(text) > 2 * radius else ""
+        return [(_clean(text[: 2 * radius]) + tail, False)]
 
     i, j = _best_window(hits, 2 * radius)
     middle = (hits[i].start + hits[j - 1].end) // 2
@@ -55,18 +57,36 @@ def snippet(
     while hits[j - 1].end < hi < len(text) and not text[hi].isspace():
         hi -= 1
 
-    pieces = []
+    parts: list[Part] = []
     pos = lo
     for hit in hits:
         if hit.start < lo or hit.end > hi:
             continue
-        pieces += [text[pos : hit.start], mark[0], text[hit.start : hit.end], mark[1]]
+        parts += [(text[pos : hit.start], False), (text[hit.start : hit.end], True)]
         pos = hit.end
-    pieces.append(text[pos:hi])
-    return (
-        ("…" if lo > 0 else "")
-        + _clean("".join(pieces))
-        + ("…" if hi < len(text) else "")
+    parts.append((text[pos:hi], False))
+    # One space for any run of whitespace, none at the two ends.
+    parts = [(_WHITESPACE.sub(" ", piece), is_term) for piece, is_term in parts]
+    first, last = parts[0], parts[-1]
+    parts[0] = (first[0].lstrip(), first[1])
+    parts[-1] = (parts[-1][0].rstrip(), last[1])
+    if lo > 0:
+        parts.insert(0, ("…", False))
+    if hi < len(text):
+        parts.append(("…", False))
+    return [part for part in parts if part[0]]
+
+
+def snippet(
+    text: str,
+    terms: Collection[str],
+    radius: int = 80,
+    mark: tuple[str, str] = ("**", "**"),
+) -> str:
+    """``snippet_parts`` as one string, query terms wrapped in ``mark``."""
+    return "".join(
+        f"{mark[0]}{piece}{mark[1]}" if is_term else piece
+        for piece, is_term in snippet_parts(text, terms, radius)
     )
 
 

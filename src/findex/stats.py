@@ -1,15 +1,19 @@
-"""Corpus statistics in a single pass: ``python -m findex.stats data/``."""
+"""Corpus statistics (``findex stats``): documents, tokens, vocabulary, top terms.
 
-import argparse
-import time
-import tracemalloc
+From a corpus directory they are counted in one streaming pass (Lab 1); from an
+index file they are read off the postings.
+"""
+
+import heapq
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterator
 from itertools import islice
+from operator import itemgetter
 from pathlib import Path
 from typing import NamedTuple
 
 from findex.corpus import iter_documents
+from findex.model import ArrayPostings, Index
 from findex.tokenize import tokenize
 
 
@@ -44,32 +48,17 @@ def eager_stats(root: Path, limit: int | None = None, top: int = 50) -> Stats:
     return _summarise(len(docs), counts, top)
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="findex.stats", description=__doc__)
-    parser.add_argument("root", type=Path)
-    parser.add_argument("--limit", type=int, help="only the first N documents")
-    parser.add_argument("--top", type=int, default=50)
-    parser.add_argument("--eager", action="store_true", help="use the list-based version")
-    args = parser.parse_args(argv)
-
-    run = eager_stats if args.eager else lazy_stats
-    tracemalloc.start()
-    started = time.perf_counter()
-    stats = run(args.root, args.limit, args.top)
-    elapsed = time.perf_counter() - started
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-
-    print(f"mode:         {'eager' if args.eager else 'lazy'}")
-    print(f"documents:    {stats.documents}")
-    print(f"tokens:       {stats.tokens}")
-    print(f"vocabulary:   {stats.vocabulary}")
-    print(f"elapsed:      {elapsed:.2f} s")
-    print(f"peak memory:  {peak / 2**20:.1f} MiB")
-    print(f"top {args.top}:")
-    for term, count in stats.top:
-        print(f"  {term:<20}{count}")
+def _term_counts(index: Index) -> Iterator[tuple[str, int]]:
+    """(term, occurrences in the whole corpus), one term at a time."""
+    for term, plist in index.items():
+        if isinstance(plist, ArrayPostings):  # sum the tf array, build no Postings
+            yield term, sum(plist.tfs)
+        else:
+            yield term, sum(p.tf for p in plist)
 
 
-if __name__ == "__main__":
-    main()
+def index_stats(index: Index, top: int = 50) -> Stats:
+    """The same numbers as ``lazy_stats``, read from a built index."""
+    best = heapq.nlargest(top, _term_counts(index), key=itemgetter(1))
+    tokens = sum(index.doc_lengths.values())
+    return Stats(index.num_docs, tokens, len(index), tuple(best))

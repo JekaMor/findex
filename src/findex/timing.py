@@ -1,4 +1,4 @@
-"""``@timed``: log how long each call took (logger ``findex.timing``, level INFO)."""
+"""``@timed``: log how long each call took (logger ``findex.timing``, DEBUG)."""
 
 import functools
 import logging
@@ -18,6 +18,6 @@ def timed[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
             return fn(*args, **kwargs)
         finally:
             elapsed = (time.perf_counter() - started) * 1000
-            log.info("%s took %.1f ms", fn.__qualname__, elapsed)
+            log.debug("%s took %.1f ms", fn.__qualname__, elapsed)
 
     return wrapper

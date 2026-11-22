@@ -1,8 +1,7 @@
 """Index records: postings, document metadata, and the index itself.
 
-These live apart from ``index.py`` so that ``python -m findex.index`` (which runs
-that file as ``__main__``) and ``findex.store`` see the same classes, and a
-pickled index refers to ``findex.model.Posting``, not ``__main__.Posting``.
+They live apart from ``index.py`` so that the builder, the store and the CLI all
+import the same classes, and a pickled index refers to ``findex.model.Posting``.
 """
 
 import functools
@@ -11,8 +10,9 @@ from array import array
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import islice
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol, overload
 
+from findex.boolean import EngineName
 from findex.timing import timed
 
 if TYPE_CHECKING:
@@ -22,6 +22,21 @@ log = logging.getLogger(__name__)
 
 Layout = Literal["slots", "plain", "array"]
 LAYOUTS: tuple[Layout, ...] = ("slots", "plain", "array")
+
+
+class PostingLike(Protocol):
+    """What scoring and phrase matching read from a posting.
+
+    ``Posting`` and ``PlainPosting`` both fit without inheriting from it: frozen
+    dataclass fields are read-only attributes, which is what the properties ask.
+    """
+
+    @property
+    def doc_id(self) -> int: ...
+    @property
+    def tf(self) -> int: ...
+    @property
+    def positions(self) -> tuple[int, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +80,11 @@ class ArrayPostings(Sequence[Posting]):
     def __len__(self) -> int:
         return len(self.doc_ids)
 
-    def __getitem__(self, i):  # type: ignore[override]
+    @overload
+    def __getitem__(self, i: int) -> Posting: ...
+    @overload
+    def __getitem__(self, i: slice) -> list[Posting]: ...
+    def __getitem__(self, i: int | slice) -> Posting | list[Posting]:
         if isinstance(i, slice):
             return [self[j] for j in range(*i.indices(len(self)))]
         if i < 0:
@@ -94,7 +113,8 @@ class ArrayPostings(Sequence[Posting]):
         self.positions.extend(positions)
 
 
-type PostingList = list[Posting] | list[PlainPosting] | ArrayPostings
+# list[Posting], list[PlainPosting] and ArrayPostings all fit.
+type PostingList = Sequence[PostingLike]
 
 
 def to_arrays(plist: PostingList) -> ArrayPostings:
@@ -113,6 +133,14 @@ class DocMeta:
 
     path: str
     title: str
+
+
+class MatchCache(Protocol):
+    """What Index needs from its ``functools.lru_cache``-wrapped match function."""
+
+    def __call__(self, node: Node, engine: EngineName, /) -> tuple[int, ...]: ...
+    def cache_info(self) -> functools._CacheInfo: ...  # pyright: ignore[reportPrivateUsage]  # typeshed names the cache_info() result type only privately
+    def cache_clear(self) -> None: ...
 
 
 class Index(Mapping[str, PostingList]):
@@ -220,24 +248,28 @@ class Index(Mapping[str, PostingList]):
 
     # --- matching, cached ---------------------------------------------------------
 
-    def _new_match_cache(self) -> Any:
+    def _new_match_cache(self) -> MatchCache:
         # The cache belongs to this index: a module-level @lru_cache taking the
         # index as an argument would keep every index alive for as long as one
         # of its queries stays cached.
         @functools.lru_cache(maxsize=256)
-        def cached_match(node: Node, engine: str) -> tuple[int, ...]:
+        def cached_match(node: Node, engine: EngineName) -> tuple[int, ...]:
             return tuple(node.evaluate(self, engine))
 
         return cached_match
 
-    @timed
-    def match(self, node: Node, engine: str = "merge") -> tuple[int, ...]:
+    def match(self, node: Node, engine: EngineName = "merge") -> tuple[int, ...]:
         """doc_ids matching a parsed query; repeated queries come from the cache."""
         hits = self._cached_match.cache_info().hits
-        ids = self._cached_match(node, engine)
+        ids = self._lookup(node, engine)
         how = "cache hit" if self._cached_match.cache_info().hits > hits else "computed"
-        log.info("match %s [%s]: %d docs, %s", node, engine, len(ids), how)
+        # Logged after the timed call, so writing the log line is not timed.
+        log.debug("match %s [%s]: %d docs, %s", node, engine, len(ids), how)
         return ids
+
+    @timed
+    def _lookup(self, node: Node, engine: EngineName) -> tuple[int, ...]:
+        return self._cached_match(node, engine)
 
     # --- lifecycle ----------------------------------------------------------------
 
@@ -264,4 +296,4 @@ class Index(Mapping[str, PostingList]):
         }
 
     def __setstate__(self, state: dict[str, Any]) -> None:
-        self.__init__(**state)  # type: ignore[misc]
+        self.__init__(**state)

@@ -10,18 +10,18 @@ import math
 from dataclasses import dataclass
 from typing import Protocol
 
-from findex.model import Index, Posting
+from findex.model import Index, PostingLike
 
 
 class Scorer(Protocol):
-    def __call__(self, term: str, posting: Posting, index: Index) -> float: ...
+    def __call__(self, term: str, posting: PostingLike, index: Index) -> float: ...
 
 
 @dataclass(frozen=True, slots=True)
 class TfIdf:
     """``tf · log(N / df)``: grows linearly with tf, ignores document length."""
 
-    def __call__(self, term: str, posting: Posting, index: Index) -> float:
+    def __call__(self, term: str, posting: PostingLike, index: Index) -> float:
         return posting.tf * math.log(index.num_docs / index.df(term))
 
 
@@ -43,7 +43,7 @@ class BM25:
         n, df = index.num_docs, index.df(term)
         return math.log(1 + (n - df + 0.5) / (df + 0.5))
 
-    def __call__(self, term: str, posting: Posting, index: Index) -> float:
+    def __call__(self, term: str, posting: PostingLike, index: Index) -> float:
         tf = posting.tf
         length_ratio = index.doc_length(posting.doc_id) / index.avg_doc_length
         saturation = (

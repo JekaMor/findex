@@ -19,9 +19,9 @@ import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from functools import reduce
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from findex.boolean import ENGINES, Engine, intersect
+from findex.boolean import MERGE, SET, Engine, EngineName, intersect
 from findex.tokenize import tokenize
 
 if TYPE_CHECKING:
@@ -47,12 +47,14 @@ class Node:
     def __invert__(self) -> Node:
         return Not(self)
 
-    def evaluate(self, index: Index, engine: str = "merge") -> list[int]:
+    def evaluate(self, index: Index, engine: EngineName = "merge") -> list[int]:
         """Sorted doc_ids of the documents matching this query."""
-        eng = ENGINES[engine]
-        return eng.result(self.operand(index, eng))
+        if engine == "set":
+            return SET.result(self.operand(index, SET))
+        return MERGE.result(self.operand(index, MERGE))
 
-    def operand(self, index: Index, eng: Engine) -> Any:
+    def operand[T](self, index: Index, eng: Engine[T]) -> T:
+        """This node's documents in the engine's own representation."""
         raise NotImplementedError
 
     def terms(self) -> Iterator[str]:
@@ -67,7 +69,7 @@ class Term(Node):
     def __str__(self) -> str:
         return self.text
 
-    def operand(self, index: Index, eng: Engine) -> Any:
+    def operand[T](self, index: Index, eng: Engine[T]) -> T:
         return eng.fetch(index.doc_ids(self.text))
 
     def terms(self) -> Iterator[str]:
@@ -98,7 +100,7 @@ class Phrase(Node):
     def __str__(self) -> str:
         return '"' + " ".join(self.words) + '"'
 
-    def operand(self, index: Index, eng: Engine) -> Any:
+    def operand[T](self, index: Index, eng: Engine[T]) -> T:
         if not index.positions:
             raise QueryError("phrase queries need an index built with positions")
         # Only documents having every word can have the phrase.
@@ -108,7 +110,7 @@ class Phrase(Node):
             {p.doc_id: p.positions for p in index.get(w, ()) if p.doc_id in wanted}
             for w in self.words
         ]
-        found = []
+        found: list[int] = []
         for doc_id in candidates:
             ends: Sequence[int] = where[0][doc_id]
             for positions in where[1:]:
@@ -131,7 +133,7 @@ class And(Node):
     def __str__(self) -> str:
         return f"({self.left} AND {self.right})"
 
-    def operand(self, index: Index, eng: Engine) -> Any:
+    def operand[T](self, index: Index, eng: Engine[T]) -> T:
         left = self.left.operand(index, eng)
         if isinstance(self.right, Not):  # a AND NOT b: subtract b, no complement needed
             return eng.not_(left, self.right.child.operand(index, eng))
@@ -150,7 +152,7 @@ class Or(Node):
     def __str__(self) -> str:
         return f"({self.left} OR {self.right})"
 
-    def operand(self, index: Index, eng: Engine) -> Any:
+    def operand[T](self, index: Index, eng: Engine[T]) -> T:
         return eng.or_(self.left.operand(index, eng), self.right.operand(index, eng))
 
     def terms(self) -> Iterator[str]:
@@ -165,7 +167,7 @@ class Not(Node):
     def __str__(self) -> str:
         return f"NOT {self.child}"
 
-    def operand(self, index: Index, eng: Engine) -> Any:
+    def operand[T](self, index: Index, eng: Engine[T]) -> T:
         everything = eng.fetch(index.all_doc_ids())
         return eng.not_(everything, self.child.operand(index, eng))
 
