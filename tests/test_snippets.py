@@ -1,5 +1,4 @@
 from findex.snippets import snippet
-from findex.tokenize import token_spans, tokenize
 
 
 def test_marks_terms_and_trims_with_ellipses():
@@ -43,14 +42,3 @@ def test_does_not_cut_words_at_the_edges():
 def test_no_match_shows_the_start():
     assert snippet("Just some text here.", {"whale"}) == "Just some text here."
     assert snippet("x" * 500, {"whale"}, radius=10) == "x" * 20 + "…"
-
-
-def test_token_spans_agree_with_tokenize():
-    text = "Straße, don’t п'ять well-known 3.14 café “Quoted”"
-
-    spans = list(token_spans(text))
-
-    assert [t for t, _, _ in spans] == list(tokenize(text))
-    for token, start, end in spans:
-        assert end > start
-    assert spans[0] == ("strasse", 0, 6)

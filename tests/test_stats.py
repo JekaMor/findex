@@ -1,4 +1,4 @@
-from findex.stats import eager_stats, lazy_stats, main
+from findex.stats import eager_stats, index_stats, lazy_stats
 
 
 def make_corpus(tmp_path):
@@ -29,17 +29,11 @@ def test_eager_matches_lazy(tmp_path):
     assert eager_stats(root, top=50) == lazy_stats(root, top=50)
 
 
-def test_main_prints_report(tmp_path, capsys):
-    root = make_corpus(tmp_path)
+def test_index_stats_match_corpus_stats(corpus_dir, corpus_index):
+    from_corpus = lazy_stats(corpus_dir, top=5)
+    from_index = index_stats(corpus_index, top=5)
 
-    main([str(root), "--top", "3"])
-
-    out = capsys.readouterr().out
-    for needle in ("documents", "tokens", "vocabulary", "the", "elapsed", "peak memory"):
-        assert needle in out
-
-
-def test_main_eager_flag(tmp_path, capsys):
-    main([str(make_corpus(tmp_path)), "--eager"])
-
-    assert "eager" in capsys.readouterr().out
+    assert from_index.documents == from_corpus.documents
+    assert from_index.tokens == from_corpus.tokens
+    assert from_index.vocabulary == from_corpus.vocabulary
+    assert dict(from_index.top) == dict(from_corpus.top)

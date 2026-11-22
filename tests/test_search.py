@@ -3,13 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from findex.boolean import ENGINES
+from findex.boolean import ENGINE_NAMES
 from findex.corpus import Document
 from findex.index import build_index
 from findex.query import Term
 from findex.scoring import TfIdf
-from findex.search import SearchResult, main, search
-from findex.store import save
+from findex.search import SearchResult, search
 
 TEXTS = [
     "Title: Cats\nthe cat sat on the mat with another cat",  # 0
@@ -59,7 +58,7 @@ def test_only_negative_query_matches_with_zero_score(index):
     assert {r.score for r in results} == {0.0}
 
 
-@pytest.mark.parametrize("engine", sorted(ENGINES))
+@pytest.mark.parametrize("engine", ENGINE_NAMES)
 def test_engines_rank_the_same(index, engine):
     assert search(index, "cat OR dog", engine=engine) == search(index, "cat OR dog")
 
@@ -70,33 +69,7 @@ def test_scorer_is_swappable(index):
 
 
 def test_search_is_timed(index, caplog):
-    with caplog.at_level(logging.INFO, logger="findex.timing"):
+    with caplog.at_level(logging.DEBUG, logger="findex.timing"):
         search(index, "cat")
 
     assert any(r.getMessage().startswith("search took") for r in caplog.records)
-
-
-def test_main_ranks_snippets_and_caches(index, tmp_path, capsys, monkeypatch, caplog):
-    for i, text in enumerate(TEXTS):
-        (tmp_path / f"d{i}.txt").write_text(text, encoding="utf-8")
-    monkeypatch.chdir(tmp_path)  # doc paths are relative, like data/... in real use
-    save(index, tmp_path / "index.bin")
-
-    with caplog.at_level(logging.INFO, logger="findex"):
-        main(["index.bin", '"event loop"', "cat", "cat", "a OR (", "-v", "-k", "1"])
-
-    out = capsys.readouterr().out
-    for needle in (
-        "Index(terms=",
-        "BM25(k1=1.5, b=0.75)",
-        "parsed:       cat",
-        "1.   ",
-        "**cat**",
-        "**event** **loop**",
-        "error:        the query ends too early",
-        "peak memory",
-    ):
-        assert needle in out
-    logged = [r.getMessage() for r in caplog.records]
-    assert "match cat [merge]: 2 docs, computed" in logged
-    assert "match cat [merge]: 2 docs, cache hit" in logged

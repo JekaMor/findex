@@ -83,7 +83,7 @@ def test_closed_index_refuses_lookups(index):
 def test_match_is_cached_per_index(index, caplog):
     tree = parse("cat OR dog")
 
-    with caplog.at_level(logging.INFO, logger="findex"):
+    with caplog.at_level(logging.DEBUG, logger="findex"):
         first = index.match(tree)
         again = index.match(parse("cat  OR  dog"))  # an equal tree is the same key
 

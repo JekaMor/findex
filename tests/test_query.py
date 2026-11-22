@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from findex.boolean import ENGINES
+from findex.boolean import ENGINE_NAMES
 from findex.corpus import Document
 from findex.index import build_index
 from findex.query import And, Not, Or, Phrase, QueryError, Term, parse
@@ -101,7 +101,7 @@ def index():
     return build_index(docs, positions=True)
 
 
-@pytest.mark.parametrize("engine", sorted(ENGINES))
+@pytest.mark.parametrize("engine", ENGINE_NAMES)
 @pytest.mark.parametrize(
     ("query", "expected"),
     [

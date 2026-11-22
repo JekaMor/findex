@@ -23,7 +23,7 @@ def test_wraps_keeps_name_and_doc():
 
 
 def test_logs_elapsed_time(caplog):
-    with caplog.at_level(logging.INFO, logger="findex.timing"):
+    with caplog.at_level(logging.DEBUG, logger="findex.timing"):
         assert add(1, 2) == 3
 
     (record,) = caplog.records
@@ -33,7 +33,7 @@ def test_logs_elapsed_time(caplog):
 
 def test_logs_even_when_the_call_raises(caplog):
     with (
-        caplog.at_level(logging.INFO, logger="findex.timing"),
+        caplog.at_level(logging.DEBUG, logger="findex.timing"),
         pytest.raises(RuntimeError),
     ):
         boom()

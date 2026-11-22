@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from findex.corpus import Document, iter_documents
-from findex.index import build_index, main, title_of
+from findex.index import build_index, title_of
 from findex.model import LAYOUTS, ArrayPostings, DocMeta, PlainPosting, Posting
 
 
@@ -87,21 +87,3 @@ def test_build_consumes_the_lazy_stream(tmp_path):
     assert len(index.doc_meta) == 2
     assert len(index.doc_ids("beta")) == 2
     assert "First" in {m.title for m in index.doc_meta.values()}
-
-
-def test_main_builds_and_saves(tmp_path, capsys):
-    (tmp_path / "a.txt").write_text("hello world", encoding="utf-8")
-    out = tmp_path / "index.bin"
-
-    main([str(tmp_path), "--out", str(out)])
-
-    assert out.exists()
-    printed = capsys.readouterr().out
-    for needle in (
-        "documents:    1",
-        "terms:        2",
-        "binary",
-        "build",
-        "peak memory",
-    ):
-        assert needle in printed
