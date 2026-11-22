@@ -21,7 +21,9 @@ is parsed up front, each term's postings are read when asked for, and the file
 stays open until the ``with`` block ends.
 """
 
+import gc
 import json
+import logging
 import mmap
 import pickle
 import sys
@@ -31,8 +33,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Final, Literal, TypedDict, cast
 
+import numpy as np
+import numpy.typing as npt
+
 from findex.model import ArrayPostings, DocMeta, Index, PostingList, to_arrays
 from findex.timing import timed
+
+log = logging.getLogger(__name__)
 
 type Buffer = bytes | memoryview | mmap.mmap
 
@@ -233,6 +240,29 @@ class MappedPostings(Mapping[str, ArrayPostings]):
     def __contains__(self, term: object) -> bool:
         return term in self._where
 
+    def numpy_arrays(
+        self, term: str
+    ) -> tuple[npt.NDArray[np.int32], npt.NDArray[np.int32]] | None:
+        """``(doc_ids, tfs)`` as int32 views onto the mapped file: nothing copied,
+        positions never touched. The file stores them as little-endian uint32."""
+        where = self._where.get(term)
+        if where is None:
+            return None
+        offset, n, _ = where
+        at = self._base + offset
+        doc_ids = np.frombuffer(self._buf, dtype="<u4", count=n, offset=at)
+        tfs = np.frombuffer(self._buf, dtype="<u4", count=n, offset=at + 4 * n)
+        return doc_ids.view(np.int32), tfs.view(np.int32)
+
+    def numpy_positions(self, term: str) -> npt.NDArray[np.int32] | None:
+        """Every posting's positions, end to end, as an int32 view (no copy)."""
+        where = self._where.get(term)
+        if where is None:
+            return None
+        offset, n, m = where
+        at = self._base + offset + 8 * n
+        return np.frombuffer(self._buf, dtype="<u4", count=m, offset=at).view(np.int32)
+
     def df(self, term: str) -> int:
         """Document frequency straight from the header, without reading postings."""
         where = self._where.get(term)
@@ -248,7 +278,17 @@ def _open_mapped(path: Path) -> Index:
         raise
 
     def close() -> None:
-        buf.close()
+        try:
+            buf.close()
+        except BufferError:
+            # NumPy views from numpy_arrays() still point into the map. They are
+            # usually garbage by now; if one is really alive, leave the map to
+            # be released when the process ends rather than invalidate it.
+            gc.collect()
+            try:
+                buf.close()
+            except BufferError:
+                log.warning("%s: arrays still use the memory map; left open", path)
         f.close()
 
     try:

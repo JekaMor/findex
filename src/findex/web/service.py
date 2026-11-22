@@ -9,14 +9,13 @@ import math
 import time
 import unicodedata
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 from findex.corpus import document_text
 from findex.model import Index
 from findex.query import Node, parse
 from findex.search import SCORERS, ScorerName, SearchResult, search
-from findex.snippets import Part, snippet_parts
+from findex.snippets import Part, snippet_for
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,18 +45,6 @@ class Page:
         return max(1, math.ceil(self.total / self.k))
 
 
-@lru_cache(maxsize=2048)
-def cached_snippet(
-    path: str, url: str | None, terms: frozenset[str]
-) -> tuple[Part, ...]:
-    """A result's snippet. The same top documents come back for popular
-    queries, and a long book takes tens of milliseconds to scan."""
-    text = document_text(path, url)
-    if text is None:
-        return (("(text not available)", False),)
-    return tuple(snippet_parts(text, terms))
-
-
 def search_page(
     index: Index, query: str, scorer: ScorerName, k: int, page: int
 ) -> Page:
@@ -69,7 +56,7 @@ def search_page(
     terms = frozenset(node.terms())
     first = (page - 1) * k
     hits = tuple(
-        FoundHit(first + i + 1, r, cached_snippet(r.path, r.url, terms))
+        FoundHit(first + i + 1, r, tuple(snippet_for(index, r.doc_id, terms)))
         for i, r in enumerate(best[first:])
     )
     took = (time.perf_counter() - started) * 1000

@@ -5,7 +5,6 @@ Results go to stdout; logs, progress bars and errors go to stderr, so
 Logging is configured here, once, and nowhere in the library.
 """
 
-import asyncio
 import contextlib
 import io
 import json
@@ -23,7 +22,7 @@ from itertools import islice
 from logging.handlers import QueueHandler, QueueListener
 from multiprocessing import get_context
 from pathlib import Path
-from typing import Annotated, Any, Final, Literal, NoReturn, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NoReturn, TypedDict
 
 import typer
 from rich.console import Console
@@ -44,20 +43,24 @@ from findex.boolean import EngineName
 from findex.corpus import (
     Document,
     corpus_paths,
-    document_text,
     is_jsonl,
     iter_documents,
 )
-from findex.crawler import USER_AGENT, CrawlStats, canonical, crawl
 from findex.index import build_index
 from findex.model import Index
 from findex.parallel import ExecutorName, build_parallel, gil_enabled
 from findex.query import Node, QueryError, parse
 from findex.search import SCORERS, ScorerName, SearchResult, search
-from findex.snippets import Part, snippet_parts
+from findex.snippets import Part, snippet_for
 from findex.stats import Stats, eager_stats, index_stats, lazy_stats
 from findex.store import Format, IndexFormatError, open_index, save
 from findex.sysinfo import peak_rss
+
+if TYPE_CHECKING:
+    from findex.crawler import CrawlStats
+
+# The crawler (asyncio, httpx) is imported inside `findex crawl` only: profiling
+# showed it was a third of the start-up time of every other command.
 
 log = logging.getLogger("findex.cli")
 
@@ -282,12 +285,14 @@ def _parse_all(queries: list[str]) -> list[Node]:
     return nodes
 
 
-def _snippet_parts(result: SearchResult, terms: set[str]) -> list[Part] | None:
-    text = document_text(result.path, result.url)
-    if text is None:
+def _snippet_parts(
+    index: Index, result: SearchResult, terms: set[str]
+) -> list[Part] | None:
+    parts = snippet_for(index, result.doc_id, terms)
+    if parts == [("(text not available)", False)]:
         log.warning("no snippet for %s: file not found", result.url or result.path)
         return None
-    return snippet_parts(text, terms)
+    return parts
 
 
 def _as_text(parts: list[Part] | None) -> Text:
@@ -299,7 +304,7 @@ def _as_text(parts: list[Part] | None) -> Text:
 
 
 def _results_table(
-    query: str, node: Node, results: list[SearchResult], snippets: bool
+    index: Index, query: str, node: Node, results: list[SearchResult], snippets: bool
 ) -> Table:
     table = Table(
         title=f"[bold]{escape(query)}[/]", caption=escape(str(node)), expand=True
@@ -315,17 +320,17 @@ def _results_table(
         title = Text.assemble(result.title, "\n", (where, "dim"))
         row: list[str | Text] = [str(rank), f"{result.score:.3f}", title]
         if snippets:
-            row.append(_as_text(_snippet_parts(result, terms)))
+            row.append(_as_text(_snippet_parts(index, result, terms)))
         table.add_row(*row)
     return table
 
 
 def _json_records(
-    query: str, node: Node, results: list[SearchResult], snippets: bool
+    index: Index, query: str, node: Node, results: list[SearchResult], snippets: bool
 ) -> Iterator[ResultRecord]:
     terms = set(node.terms())
     for rank, result in enumerate(results, 1):
-        parts = _snippet_parts(result, terms) if snippets else None
+        parts = _snippet_parts(index, result, terms) if snippets else None
         yield {
             "query": query,
             "rank": rank,
@@ -388,11 +393,11 @@ def _run_query(
     except QueryError as exc:  # e.g. a phrase on an index without positions
         fail(f"cannot run {query!r}: {exc}", code=2)
     if as_json:
-        for record in _json_records(query, node, results, snippets):
+        for record in _json_records(index, query, node, results, snippets):
             sys.stdout.write(json.dumps(record) + "\n")
         sys.stdout.flush()
     elif results:
-        out.print(_results_table(query, node, results, snippets))
+        out.print(_results_table(index, query, node, results, snippets))
     else:
         out.print(f"[bold]{escape(query)}[/]: nothing found")
 
@@ -465,6 +470,8 @@ def _parse_pool(kind: Literal["threads", "processes"]) -> Generator[Executor | N
 async def _crawl_to_file(
     seed: str, out_path: Path, stats: CrawlStats, **options: Any
 ) -> None:
+    from findex.crawler import crawl
+
     with out_path.open("w", encoding="utf-8") as sink:
         async with contextlib.aclosing(crawl([seed], stats=stats, **options)) as pages:
             async for page in pages:
@@ -516,6 +523,10 @@ def crawl_command(
     ] = "processes",
 ) -> None:
     """Crawl a site politely (robots.txt, per-host limits) into a .jsonl corpus."""
+    import asyncio
+
+    from findex.crawler import USER_AGENT, CrawlStats, canonical
+
     if canonical(seed) is None:
         fail(f"not an http(s) URL: {seed}")
     out_path.parent.mkdir(parents=True, exist_ok=True)

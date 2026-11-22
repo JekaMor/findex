@@ -32,6 +32,11 @@ Repository = "https://github.com/JekaMor/findex"
 [project.scripts]
 findex = "findex.cli:app"
 
+[project.optional-dependencies]
+semantic = [
+    "fastembed>=0.9.1",
+]
+
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]
 build-backend = "uv_build"
@@ -60,7 +65,7 @@ pythonVersion = "3.14"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["--strict-markers"]
+addopts = ["--strict-markers", "--benchmark-disable"]
 markers = ["slow: takes more than a second (deselect with -m 'not slow')"]
 
 [tool.coverage.run]

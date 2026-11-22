@@ -11,16 +11,39 @@ import itertools
 import time
 from pathlib import Path
 
-from findex.corpus import document_text
 from findex.query import parse
 from findex.search import search
-from findex.snippets import snippet_parts
+from findex.snippets import snippet_for
 from findex.store import open_index
 
-WORDS = (
-    "sea ship captain whale night house love war king queen death life father mother "
-    "letter money god heart fire water blood gold horse church friend door"
-).split()
+WORDS = [
+    "sea",
+    "ship",
+    "captain",
+    "whale",
+    "night",
+    "house",
+    "love",
+    "war",
+    "king",
+    "queen",
+    "death",
+    "life",
+    "father",
+    "mother",
+    "letter",
+    "money",
+    "god",
+    "heart",
+    "fire",
+    "water",
+    "blood",
+    "gold",
+    "horse",
+    "church",
+    "friend",
+    "door",
+]
 
 
 def queries(n: int) -> list[str]:
@@ -44,9 +67,7 @@ def main() -> None:
             if not args.no_snippets:
                 terms = set(node.terms())
                 for r in results:
-                    text = document_text(r.path, r.url)
-                    if text is not None:
-                        snippet_parts(text, terms)
+                    snippet_for(index, r.doc_id, terms)
     took = time.perf_counter() - started
     print(f"{args.n} queries in {took:.2f} s ({took / args.n * 1000:.1f} ms each)")
 

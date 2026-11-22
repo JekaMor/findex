@@ -12,6 +12,9 @@ from dataclasses import dataclass, field
 from itertools import islice
 from typing import TYPE_CHECKING, Any, Literal, Protocol, overload
 
+import numpy as np
+import numpy.typing as npt
+
 from findex.boolean import EngineName
 from findex.timing import timed
 
@@ -243,6 +246,65 @@ class Index(Mapping[str, PostingList]):
         if isinstance(plist, ArrayPostings):
             return plist.doc_ids
         return [p.doc_id for p in plist]
+
+    @functools.cached_property
+    def doc_length_array(self) -> npt.NDArray[np.int32]:
+        """Tokens per document as one int32 array, indexed by doc_id (built once)."""
+        lengths = np.zeros(max(self.doc_lengths, default=-1) + 1, dtype=np.int32)
+        for doc_id, length in self.doc_lengths.items():
+            lengths[doc_id] = length
+        return lengths
+
+    def postings_arrays(
+        self, term: str
+    ) -> tuple[npt.NDArray[np.int32], npt.NDArray[np.int32]] | None:
+        """``(doc_ids, tfs)`` of ``term`` as int32 arrays, positions left out.
+
+        For an index opened with ``open_index`` they are views straight onto the
+        memory-mapped file (``np.frombuffer``, no copy, no decoding); for
+        ``ArrayPostings`` in memory, views onto the ``array('I')`` buffers.
+        """
+        self._check_open()
+        from_file = getattr(self.postings, "numpy_arrays", None)  # MappedPostings
+        if from_file is not None:
+            found: tuple[npt.NDArray[np.int32], npt.NDArray[np.int32]] | None
+            found = from_file(term)
+            return found
+        plist = self.postings.get(term)
+        if plist is None:
+            return None
+        if isinstance(plist, ArrayPostings):
+            return (
+                np.frombuffer(plist.doc_ids, dtype=np.uint32).view(np.int32),
+                np.frombuffer(plist.tfs, dtype=np.uint32).view(np.int32),
+            )
+        return (
+            np.fromiter((p.doc_id for p in plist), dtype=np.int32, count=len(plist)),
+            np.fromiter((p.tf for p in plist), dtype=np.int32, count=len(plist)),
+        )
+
+    def positions_in(self, term: str, doc_id: int) -> npt.NDArray[np.int32]:
+        """Where ``term`` occurs in ``doc_id`` (token offsets), found by binary
+        search in the term's sorted doc_ids instead of walking its postings."""
+        empty = np.empty(0, dtype=np.int32)
+        arrays = self.postings_arrays(term)
+        if arrays is None or not self.positions:
+            return empty
+        doc_ids, tfs = arrays
+        i = int(np.searchsorted(doc_ids, doc_id))
+        if i == doc_ids.size or doc_ids[i] != doc_id:
+            return empty
+        start = int(tfs[:i].sum(dtype=np.int64))
+        stop = start + int(tfs[i])
+        from_file = getattr(self.postings, "numpy_positions", None)
+        if from_file is not None:  # MappedPostings: a view onto the file
+            everything: npt.NDArray[np.int32] | None = from_file(term)
+            return empty if everything is None else everything[start:stop]
+        plist = self.postings[term]
+        if isinstance(plist, ArrayPostings):
+            whole = np.frombuffer(plist.positions, dtype=np.uint32).view(np.int32)
+            return whole[start:stop]
+        return np.asarray(plist[i].positions, dtype=np.int32)
 
     def all_doc_ids(self) -> list[int]:
         # doc_meta is filled in doc_id order and a dict keeps insertion order.

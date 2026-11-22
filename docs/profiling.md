@@ -74,4 +74,48 @@ about half.
 
 ## Part 2 — after
 
-(filled in after the changes, with the same commands)
+Same machine, same commands.
+
+| What | Before | After | Change |
+|---|---|---|---|
+| search with snippets, per query | 300–366 ms | **21.6–22.5 ms** | ~15× |
+| ranking only, per query | 0.5 ms | 0.2 ms | 2.5× |
+| `import findex.cli` (every CLI command) | 0.97 s | 0.60 s | −0.37 s |
+| index build, one process | 7.1–7.5 s | unchanged | — |
+
+**1. Snippets.** The first fix, caching the prepared (NFC, lower-cased) text of
+the last 8 documents, barely helped (300–329 ms): results spread over more than 8
+books, and even a cached book is still scanned whole by the regex. The real fix
+uses what the index already knows: the token positions of the query terms in
+that document. `snippets.locate` finds the densest cluster of terms with NumPy
+(`searchsorted` over the position arrays), turns the token position into an
+estimated byte offset, and `snippet_for` reads only 64 KB of the file around it.
+Snippets went from tens of ms to ~2 ms each; in 2,000 snippets the estimate
+never missed (the whole-document fallback ran 0 times).
+
+**2. Ranking.** `rank_numpy` scores each term's postings as int32 arrays
+(`np.frombuffer` views onto the memory-mapped file, positions never decoded) and
+takes the top k with `np.argpartition`. It ranks exactly like Lab 3's loop
+(tested, including a Hypothesis property and ties at the k boundary). Speed-ups,
+from `scripts/bench_scoring.py`:
+
+| Index (documents) | Query | Docs matched | Lab 3, ms | NumPy, ms | Speedup |
+|---|---|---|---|---|---|
+| books (40) | `the` | 40 | 10.064 | 0.065 | 155× |
+| books (40) | `publick` (rare) | 1 | 0.012 | 0.045 | 0.3× |
+| books (40) | `sea OR ship OR captain` | 37 | 0.554 | 0.115 | 4.8× |
+| passages (34,429) | `the` | 33,130 | 102.471 | 3.249 | 31.5× |
+| passages (34,429) | `cabbin` (rare) | 1 | 0.017 | 0.074 | 0.2× |
+| passages (34,429) | `sea OR ship OR captain` | 1,891 | 10.801 | 0.255 | 42.4× |
+
+Without positions in the index (`--no-positions`) the books row for `the` is only
+1.4× (0.104 → 0.072 ms): the 155× was mostly Lab 3 decoding 294,000 positions it
+never needed. On the passages index without positions, pure vectorisation:
+26× (`the`) and 22× (3 terms). A rare term is 3–5× *slower* in NumPy: one
+posting costs less than the fixed cost of a few NumPy calls (~40 µs). On the
+4-document test corpus (pytest-benchmark) NumPy is 5× slower for the same reason.
+
+**3. Indexing** — not changed (see Part 1).
+
+**CLI start-up.** The crawler (`asyncio`, `httpx`) is now imported inside
+`findex crawl` only.
