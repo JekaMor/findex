@@ -15,16 +15,26 @@ never run code::
 The header lists the documents and, for each term, ``[term, offset, n, m]``:
 at ``offset`` in the data there are ``n`` doc_ids, ``n`` tfs and ``m``
 positions, each a little-endian uint32.
+
+``open_index`` memory-maps a binary file instead of reading it: only the header
+is parsed up front, each term's postings are read when asked for, and the file
+stays open until the ``with`` block ends.
 """
 
 import json
+import mmap
 import pickle
 import sys
 from array import array
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
 from findex.model import ArrayPostings, DocMeta, Index, PostingList, to_arrays
+from findex.timing import timed
+
+type Buffer = bytes | memoryview | mmap.mmap
 
 Format = Literal["binary", "pickle"]
 FORMATS: tuple[Format, ...] = ("binary", "pickle")
@@ -49,12 +59,17 @@ def save(index: Index, path: Path, fmt: Format | None = None) -> Format:
     return fmt
 
 
-def load(path: Path) -> Index:
-    """Read an index written by ``save``; the format is detected from the file."""
+@timed
+def load(path: Path, *, lazy: bool = False) -> Index:
+    """Read an index written by ``save``; the format is detected from the file.
+
+    ``lazy=True`` memory-maps a binary file and reads postings on demand; the
+    index must then be closed (``open_index`` does it). Pickle always loads whole.
+    """
     with path.open("rb") as f:
         head = f.read(len(MAGIC))
     if head == MAGIC:
-        return _load_binary(path)
+        return _open_mapped(path) if lazy else _load_binary(path)
     if not head.startswith(b"\x80"):
         raise ValueError(f"{path} is not a findex index")
     # Trusted files only: see the module docstring.
@@ -63,6 +78,17 @@ def load(path: Path) -> Index:
     if not isinstance(index, Index):
         raise TypeError(f"{path} does not contain an Index")
     return index
+
+
+@contextmanager
+def open_index(path: Path) -> Iterator[Index]:
+    """``with open_index(path) as index:`` -- the index is closed when the block
+    ends, whether it finishes, returns or raises."""
+    index = load(path, lazy=True)
+    try:
+        yield index
+    finally:
+        index.close()
 
 
 def _counts(plist: PostingList) -> tuple[int, int]:
@@ -79,7 +105,7 @@ def _little_endian(a: array[int]) -> bytes:
     return a.tobytes()
 
 
-def _from_little_endian(data: memoryview) -> array[int]:
+def _from_little_endian(data: bytes | memoryview) -> array[int]:
     a = array("I")
     a.frombytes(data)
     if sys.byteorder == "big":
@@ -116,26 +142,88 @@ def _save_binary(index: Index, path: Path) -> None:
             f.write(_little_endian(arrays.positions))
 
 
-def _load_binary(path: Path) -> Index:
-    data = memoryview(path.read_bytes())
+def _read_header(buf: Buffer) -> tuple[dict, int]:
+    """(header, where the postings data starts)."""
     start = len(MAGIC) + 8
-    header_len = int.from_bytes(data[len(MAGIC) : start], "little")
-    header = json.loads(bytes(data[start : start + header_len]))
-    body = data[start + header_len :]
+    header_len = int.from_bytes(buf[len(MAGIC) : start], "little")
+    header = json.loads(bytes(buf[start : start + header_len]))
+    return header, start + header_len
 
-    postings: dict[str, PostingList] = {}
-    for term, offset, n, m in header["terms"]:
-        tfs_at = offset + 4 * n
-        positions_at = tfs_at + 4 * n
-        postings[term] = ArrayPostings(
-            _from_little_endian(body[offset:tfs_at]),
-            _from_little_endian(body[tfs_at:positions_at]),
-            _from_little_endian(body[positions_at : positions_at + 4 * m]),
-        )
+
+def _postings_at(buf: Buffer, at: int, n: int, m: int) -> ArrayPostings:
+    tfs_at = at + 4 * n
+    positions_at = tfs_at + 4 * n
+    return ArrayPostings(
+        _from_little_endian(buf[at:tfs_at]),
+        _from_little_endian(buf[tfs_at:positions_at]),
+        _from_little_endian(buf[positions_at : positions_at + 4 * m]),
+    )
+
+
+def _index_from(header: dict, postings: Mapping[str, PostingList], **kwargs) -> Index:
     return Index(
         postings,
         {doc_id: length for doc_id, length in header["doc_lengths"]},
         {doc_id: DocMeta(p, title) for doc_id, p, title in header["doc_meta"]},
         layout="array",
         positions=header["positions"],
+        **kwargs,
     )
+
+
+def _load_binary(path: Path) -> Index:
+    data = memoryview(path.read_bytes())
+    header, base = _read_header(data)
+    postings: dict[str, PostingList] = {
+        term: _postings_at(data, base + offset, n, m)
+        for term, offset, n, m in header["terms"]
+    }
+    return _index_from(header, postings)
+
+
+class MappedPostings(Mapping[str, ArrayPostings]):
+    """term -> postings, read from a memory-mapped file only when asked for."""
+
+    def __init__(self, buf: mmap.mmap, base: int, terms: list) -> None:
+        self._buf = buf
+        self._base = base
+        self._where = {term: (offset, n, m) for term, offset, n, m in terms}
+
+    def __getitem__(self, term: str) -> ArrayPostings:
+        offset, n, m = self._where[term]
+        return _postings_at(self._buf, self._base + offset, n, m)
+
+    def __len__(self) -> int:
+        return len(self._where)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._where)
+
+    def __contains__(self, term: object) -> bool:
+        return term in self._where
+
+    def df(self, term: str) -> int:
+        """Document frequency straight from the header, without reading postings."""
+        where = self._where.get(term)
+        return 0 if where is None else where[1]
+
+
+def _open_mapped(path: Path) -> Index:
+    f = path.open("rb")
+    try:
+        buf = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    except BaseException:
+        f.close()
+        raise
+
+    def close() -> None:
+        buf.close()
+        f.close()
+
+    try:
+        header, base = _read_header(buf)
+        postings = MappedPostings(buf, base, header["terms"])
+        return _index_from(header, postings, closer=close)
+    except BaseException:
+        close()
+        raise

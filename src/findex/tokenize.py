@@ -25,3 +25,17 @@ def tokenize(text: str) -> Iterator[str]:
     normalised = unicodedata.normalize("NFC", text).casefold().translate(_APOSTROPHES)
     for match in _WORD.finditer(normalised):
         yield match.group()
+
+
+def token_spans(text: str) -> Iterator[tuple[str, int, int]]:
+    """Tokens of ``text`` with where they are: ``(token, start, end)``.
+
+    Offsets point into ``unicodedata.normalize("NFC", text)``, which looks the same
+    as the original. Used for snippets. Apostrophes are swapped one character for
+    one, so offsets survive; the token is casefolded after it is found. That gives
+    the same tokens as ``tokenize`` except in rare cases where casefolding itself
+    adds a combining mark (Turkish ``İ``).
+    """
+    prepared = unicodedata.normalize("NFC", text).translate(_APOSTROPHES)
+    for match in _WORD.finditer(prepared):
+        yield match.group().casefold(), match.start(), match.end()

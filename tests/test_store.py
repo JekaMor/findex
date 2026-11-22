@@ -5,7 +5,7 @@ import pytest
 from findex.corpus import Document
 from findex.index import build_index
 from findex.model import LAYOUTS, to_arrays
-from findex.store import MAGIC, format_for, load, save
+from findex.store import MAGIC, MappedPostings, format_for, load, open_index, save
 
 TEXTS = ["Title: One\nthe cat the", "dog п'ять cat", "the end"]
 
@@ -66,3 +66,40 @@ def test_unknown_file_is_rejected(tmp_path):
 
     with pytest.raises(ValueError, match="not a findex index"):
         load(path)
+
+
+def test_open_index_maps_binary_file_and_reads_lazily(tmp_path):
+    index = build(positions=True)
+    path = tmp_path / "index.bin"
+    save(index, path)
+
+    with open_index(path) as opened:
+        assert isinstance(opened.postings, MappedPostings)
+        assert as_plain_data(opened) == as_plain_data(index)
+        assert opened.df("cat") == 2
+        assert "cat" in opened
+        assert "unicorn" not in opened
+    assert opened.closed
+
+
+def test_open_index_closes_when_the_block_raises(tmp_path):
+    path = tmp_path / "index.bin"
+    save(build(), path)
+
+    with pytest.raises(RuntimeError), open_index(path) as opened:
+        raise RuntimeError("boom")
+
+    assert opened.closed
+    with pytest.raises(ValueError, match="closed"):
+        opened["cat"]
+    path.unlink()  # on Windows this fails while the file is still mapped
+
+
+def test_open_index_also_opens_pickle(tmp_path):
+    path = tmp_path / "index.pkl"
+    save(build(), path)
+
+    with open_index(path) as opened:
+        assert opened.layout == "slots"
+        assert opened.df("the") == 2
+    assert opened.closed

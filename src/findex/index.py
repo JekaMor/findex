@@ -23,6 +23,7 @@ from findex.model import (
     Posting,
 )
 from findex.store import FORMATS, save
+from findex.timing import timed
 from findex.tokenize import tokenize
 
 _TITLE = re.compile(r"^Title:[ \t]*(.+?)\s*$", re.MULTILINE)
@@ -48,6 +49,7 @@ def _terms(
     return length, ((term, len(pos), tuple(pos)) for term, pos in where.items())
 
 
+@timed
 def build_index(
     docs: Iterable[Document], layout: Layout = "slots", positions: bool = False
 ) -> Index:
@@ -103,7 +105,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--layout", choices=LAYOUTS, default="slots", help="postings in memory"
     )
     parser.add_argument(
-        "--positions", action="store_true", help="also store token positions"
+        "--positions",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="store token positions (needed for phrase queries; default: on)",
     )
     parser.add_argument("--limit", type=int, help="only the first N documents")
     args = parser.parse_args(argv)

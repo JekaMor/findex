@@ -16,7 +16,7 @@ from pathlib import Path
 from findex.corpus import iter_documents
 from findex.index import build_index
 from findex.model import LAYOUTS, Index
-from findex.search import search
+from findex.query import parse
 from findex.store import load, save
 
 MIB = 2**20
@@ -123,10 +123,12 @@ def main(root: Path) -> None:
     print("|---|---|---|---|")
     for a, b in (common, rare):
         for query in (f"{a} {b}", f"{a} OR {b}", f"{a} NOT {b}"):
-            hits = len(search(index, query))
+            hits = len(parse(query).evaluate(index))
             times = []
             for engine in ("merge", "set"):
-                timer = timeit.Timer(lambda q=query, e=engine: search(index, q, e))
+                timer = timeit.Timer(
+                    lambda q=query, e=engine: parse(q).evaluate(index, e)
+                )
                 number, _ = timer.autorange()
                 best = min(timer.repeat(5, number)) / number
                 times.append(f"{best * 1e6:.1f} µs")
