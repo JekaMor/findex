@@ -1,0 +1,16 @@
+# Render Blueprint: Dashboard -> New -> Blueprint -> this repository.
+# The image is built from the Dockerfile; configuration is environment only.
+services:
+  - type: web
+    name: findex
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: LOG_LEVEL
+        value: INFO
+      - key: WEB_CONCURRENCY # uvicorn worker processes; the free plan has 0.1 CPU
+        value: "1"

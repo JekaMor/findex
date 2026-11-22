@@ -47,3 +47,24 @@ jobs:
         run: uv run --python 3.14t python -c "import sys; print(sys.version); assert not sys._is_gil_enabled()"
       - name: pytest
         run: uv run --python 3.14t pytest
+
+  docker:
+    name: docker image (build, run as non-root, probe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (two stages, from uv.lock)
+        run: docker build -t findex .
+      - name: Run it and search it
+        run: |
+          docker run -d --name findex -p 8000:8000 findex
+          for i in $(seq 1 40); do curl -fs localhost:8000/health && break; sleep 1; done
+          echo
+          curl -fs "localhost:8000/search?q=white+whale&k=3" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['total'] > 0, d; print(d['results'][0]['title'])"
+          curl -fs -o /dev/null "localhost:8000/?q=white+whale"
+          test "$(docker exec findex id -u)" != "0"
+          docker logs findex
+      - name: A bad INDEX_PATH stops it at start-up
+        run: |
+          if docker run --rm -e INDEX_PATH=/nope.bin findex; then exit 1; fi
