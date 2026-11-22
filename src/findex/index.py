@@ -25,7 +25,9 @@ type AddPosting = Callable[[str, int, int, tuple[int, ...]], None]
 
 
 def title_of(doc: Document) -> str:
-    """The Gutenberg ``Title:`` header line, or the file name without extension."""
+    """The page's own title, the Gutenberg ``Title:`` header line, or the file name."""
+    if doc.title:
+        return doc.title
     match = _TITLE.search(doc.text, 0, 5000)
     return match.group(1) if match else doc.path.stem
 
@@ -89,7 +91,7 @@ def build_index(
         for term, tf, pos in terms:
             add(term, doc.doc_id, tf, pos)
         doc_lengths[doc.doc_id] = length
-        doc_meta[doc.doc_id] = DocMeta(str(doc.path), title_of(doc))
+        doc_meta[doc.doc_id] = DocMeta(str(doc.path), title_of(doc), doc.url)
 
     # A plain dict: looking up an unknown term must not insert it.
     return Index(dict(postings), doc_lengths, doc_meta, layout, positions)

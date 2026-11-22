@@ -129,10 +129,15 @@ def to_arrays(plist: PostingList) -> ArrayPostings:
 
 @dataclass(frozen=True, slots=True)
 class DocMeta:
-    """What a search result shows for a document."""
+    """What a search result shows for a document.
+
+    ``path`` is the file the text was read from. For a crawled page that file is
+    the crawl's JSON-lines output, and ``url`` says which record in it.
+    """
 
     path: str
     title: str
+    url: str | None = None
 
 
 class MatchCache(Protocol):

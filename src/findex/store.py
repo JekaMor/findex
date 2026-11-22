@@ -47,7 +47,8 @@ class Header(TypedDict):
 
     positions: bool
     doc_lengths: list[tuple[int, int]]  # [doc_id, length]
-    doc_meta: list[tuple[int, str, str]]  # [doc_id, path, title]
+    # [doc_id, path, title] or, for a crawled page, [doc_id, path, title, url]
+    doc_meta: list[tuple[int, str, str] | tuple[int, str, str, str]]
     terms: list[tuple[str, int, int, int]]  # [term, offset, postings, positions]
 
 
@@ -127,6 +128,15 @@ def _from_little_endian(data: bytes | memoryview) -> array[int]:
     return a
 
 
+def _meta_row(
+    doc_id: int, meta: DocMeta
+) -> tuple[int, str, str] | tuple[int, str, str, str]:
+    # Files without URLs keep the three-field rows, so their bytes don't change.
+    if meta.url is None:
+        return (doc_id, meta.path, meta.title)
+    return (doc_id, meta.path, meta.title, meta.url)
+
+
 def _save_binary(index: Index, path: Path) -> None:
     # Offsets come from the lengths alone, so the header is written first and
     # the postings are then streamed out one term at a time.
@@ -139,7 +149,7 @@ def _save_binary(index: Index, path: Path) -> None:
     header: Header = {
         "positions": index.positions,
         "doc_lengths": list(index.doc_lengths.items()),
-        "doc_meta": [(i, m.path, m.title) for i, m in index.doc_meta.items()],
+        "doc_meta": [_meta_row(i, m) for i, m in index.doc_meta.items()],
         "terms": terms,
     }
     encoded = json.dumps(header, ensure_ascii=False).encode("utf-8")
@@ -183,7 +193,7 @@ def _index_from(
     return Index(
         postings,
         {doc_id: length for doc_id, length in header["doc_lengths"]},
-        {doc_id: DocMeta(p, title) for doc_id, p, title in header["doc_meta"]},
+        {row[0]: DocMeta(*row[1:]) for row in header["doc_meta"]},
         layout="array",
         positions=header["positions"],
         closer=closer,

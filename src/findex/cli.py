@@ -5,27 +5,51 @@ Results go to stdout; logs, progress bars and errors go to stderr, so
 Logging is configured here, once, and nowhere in the library.
 """
 
+import asyncio
+import contextlib
 import io
 import json
 import logging
+import os
+import queue
 import sys
 import time
 import tracemalloc
-from collections.abc import Iterator
+from collections.abc import Generator, Iterable, Iterator
+from concurrent.futures import Executor, ProcessPoolExecutor
+from dataclasses import asdict
 from importlib.metadata import version
+from itertools import islice
+from logging.handlers import QueueHandler, QueueListener
+from multiprocessing import get_context
 from pathlib import Path
-from typing import Annotated, Final, NoReturn, TypedDict
+from typing import Annotated, Any, Final, Literal, NoReturn, TypedDict
 
 import typer
 from rich.console import Console
+from rich.live import Live
 from rich.logging import RichHandler
 from rich.markup import escape
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, TimeElapsedColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TaskID,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 from rich.text import Text
 
 from findex.boolean import EngineName
-from findex.corpus import corpus_paths
+from findex.corpus import (
+    Document,
+    corpus_paths,
+    document_text,
+    is_jsonl,
+    iter_documents,
+)
+from findex.crawler import USER_AGENT, CrawlStats, canonical, crawl
+from findex.index import build_index
 from findex.model import Index
 from findex.parallel import ExecutorName, build_parallel, gil_enabled
 from findex.query import Node, QueryError, parse
@@ -33,6 +57,7 @@ from findex.search import SCORERS, ScorerName, SearchResult, search
 from findex.snippets import Part, snippet_parts
 from findex.stats import Stats, eager_stats, index_stats, lazy_stats
 from findex.store import Format, IndexFormatError, open_index, save
+from findex.sysinfo import peak_rss
 
 log = logging.getLogger("findex.cli")
 
@@ -64,6 +89,7 @@ class ResultRecord(TypedDict):
     score: float
     title: str
     path: str
+    url: str | None
     snippet: str | None
 
 
@@ -78,8 +104,12 @@ def configure_logging(verbosity: int) -> None:
         logger.removeHandler(_handler)
     _handler = RichHandler(console=err, show_time=False, show_path=False)
     _handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+    level = LEVELS[min(verbosity, len(LEVELS) - 1)]
+    # The handler's own level matters too: findex.crawler logs at INFO into
+    # crawl.log even without -v, and those records also reach this handler.
+    _handler.setLevel(level)
     logger.addHandler(_handler)
-    logger.setLevel(LEVELS[min(verbosity, len(LEVELS) - 1)])
+    logger.setLevel(level)
 
 
 def _never_crash_on_encoding() -> None:
@@ -131,7 +161,11 @@ def main(
 @app.command("index")
 def index_command(
     corpus: Annotated[
-        Path, typer.Argument(help="Directory with .txt files (searched recursively).")
+        Path,
+        typer.Argument(
+            help="Directory with .txt files (searched recursively), "
+            "or a .jsonl file written by findex crawl."
+        ),
     ],
     out_path: Annotated[
         Path, typer.Option("--out", "-o", help="Where to write the index.")
@@ -161,28 +195,47 @@ def index_command(
         typer.Option("--format", help="Default: pickle for .pkl, binary otherwise."),
     ] = None,
 ) -> None:
-    """Build an index from a corpus directory and save it."""
-    if not corpus.is_dir():
-        fail(f"corpus directory not found: {corpus}")
-    paths = corpus_paths(corpus)[:limit]
-    log.info("indexing %d documents from %s", len(paths), corpus)
-
-    with Progress(
+    """Build an index from a corpus directory or a crawl's .jsonl file and save it."""
+    progress = Progress(
         "[progress.description]{task.description}",
         BarColumn(),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
         console=err,
-    ) as progress:
-        task = progress.add_task("indexing", total=len(paths))
-        report = build_parallel(
-            paths,
-            executor,
-            workers,
-            positions,
-            on_chunk=lambda chunk: progress.advance(task, len(chunk.paths)),
+    )
+    if is_jsonl(corpus):
+        # One file of crawled pages: the chunk-by-path parallel build does not
+        # apply, and a crawl is small next to the book corpus. Serial it is.
+        with corpus.open("rb") as lines:
+            total = sum(1 for _ in lines)
+        total = total if limit is None else min(total, limit)
+        log.info("indexing %d pages from %s", total, corpus)
+        with progress:
+            task = progress.add_task("indexing", total=total)
+            started = time.perf_counter()
+            docs = islice(iter_documents(corpus), limit)
+            index = build_index(_advancing(docs, progress, task), "array", positions)
+            build_line = f"{time.perf_counter() - started:.2f} s (serial, JSON lines)"
+        merge_line = None
+    elif corpus.is_dir():
+        paths = corpus_paths(corpus)[:limit]
+        log.info("indexing %d documents from %s", len(paths), corpus)
+        with progress:
+            task = progress.add_task("indexing", total=len(paths))
+            report = build_parallel(
+                paths,
+                executor,
+                workers,
+                positions,
+                on_chunk=lambda chunk: progress.advance(task, len(chunk.paths)),
+            )
+        index = report.index
+        build_line = (
+            f"{report.wall:.2f} s ({report.executor}, {report.workers} workers)"
         )
-    index = report.index
+        merge_line = f"{report.merge:.2f} s"
+    else:
+        fail(f"no corpus directory or .jsonl file at {corpus}")
 
     started = time.perf_counter()
     try:
@@ -201,12 +254,19 @@ def index_command(
     table.add_row("positions", "yes" if index.positions else "no")
     table.add_row("format", used)
     table.add_row("file size", f"{out_path.stat().st_size / 2**20:.1f} MiB")
-    table.add_row(
-        "build", f"{report.wall:.2f} s ({report.executor}, {report.workers} workers)"
-    )
-    table.add_row("of which merge", f"{report.merge:.2f} s")
+    table.add_row("build", build_line)
+    if merge_line is not None:
+        table.add_row("of which merge", merge_line)
     table.add_row("save", f"{saved:.2f} s")
     out.print(table)
+
+
+def _advancing(
+    docs: Iterable[Document], progress: Progress, task: TaskID
+) -> Iterator[Document]:
+    for doc in docs:
+        yield doc
+        progress.advance(task)
 
 
 # --- findex search ---------------------------------------------------------------
@@ -223,10 +283,9 @@ def _parse_all(queries: list[str]) -> list[Node]:
 
 
 def _snippet_parts(result: SearchResult, terms: set[str]) -> list[Part] | None:
-    try:
-        text = Path(result.path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        log.warning("no snippet for %s: file not found", result.path)
+    text = document_text(result.path, result.url)
+    if text is None:
+        log.warning("no snippet for %s: file not found", result.url or result.path)
         return None
     return snippet_parts(text, terms)
 
@@ -252,7 +311,8 @@ def _results_table(
         table.add_column("snippet", ratio=3)
     terms = set(node.terms())
     for rank, result in enumerate(results, 1):
-        title = Text.assemble(result.title, "\n", (Path(result.path).name, "dim"))
+        where = result.url or Path(result.path).name
+        title = Text.assemble(result.title, "\n", (where, "dim"))
         row: list[str | Text] = [str(rank), f"{result.score:.3f}", title]
         if snippets:
             row.append(_as_text(_snippet_parts(result, terms)))
@@ -273,6 +333,7 @@ def _json_records(
             "score": result.score,
             "title": result.title,
             "path": result.path,
+            "url": result.url,
             "snippet": None if parts is None else "".join(piece for piece, _ in parts),
         }
 
@@ -336,6 +397,172 @@ def _run_query(
         out.print(f"[bold]{escape(query)}[/]: nothing found")
 
 
+# --- findex crawl ----------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _crawl_log(path: Path) -> Generator[None]:
+    """Send findex.crawler (one line per URL, retries) and asyncio's own warnings
+    to ``path``. The event loop only puts records on a queue; a listener thread
+    does the file writes, so logging never blocks the loop."""
+    records: queue.SimpleQueue[logging.LogRecord] = queue.SimpleQueue()
+    file = logging.FileHandler(path, mode="w", encoding="utf-8")
+    file.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    )
+    listener = QueueListener(records, file)
+    to_queue = QueueHandler(records)
+    loggers = [logging.getLogger("findex.crawler"), logging.getLogger("asyncio")]
+    levels = [lg.level for lg in loggers]
+    for lg in loggers:
+        lg.addHandler(to_queue)
+    loggers[0].setLevel(logging.INFO)
+    listener.start()
+    try:
+        yield
+    finally:
+        for lg, level in zip(loggers, levels, strict=True):
+            lg.removeHandler(to_queue)
+            lg.setLevel(level)
+        listener.stop()
+        file.close()
+
+
+def _live_stats(stats: CrawlStats, max_pages: int, started: float) -> Table:
+    elapsed = max(time.perf_counter() - started, 1e-9)
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold")
+    table.add_column(justify="right")
+    table.add_row("pages", f"{stats.pages} / {max_pages}")
+    table.add_row("pages/s", f"{stats.pages / elapsed:.1f}")
+    table.add_row("in flight", str(stats.in_flight))
+    table.add_row("errors", str(stats.errors))
+    table.add_row("skipped", str(stats.skipped))
+    table.add_row("queue", str(stats.queued))
+    table.add_row("elapsed", f"{elapsed:.1f} s")
+    return table
+
+
+def _sleep_briefly(_: int) -> None:
+    time.sleep(0.2)
+
+
+@contextlib.contextmanager
+def _parse_pool(kind: Literal["threads", "processes"]) -> Generator[Executor | None]:
+    """None means the event loop's own thread pool."""
+    if kind == "threads":
+        yield None
+        return
+    workers = min(2, os.cpu_count() or 1)
+    with ProcessPoolExecutor(workers, mp_context=get_context("spawn")) as pool:
+        # Start every worker now, before the event loop runs: the pool would
+        # otherwise spawn them on first use, from inside the loop, and starting
+        # a process blocks for a good part of a second on Windows.
+        list(pool.map(_sleep_briefly, range(workers)))
+        yield pool
+
+
+async def _crawl_to_file(
+    seed: str, out_path: Path, stats: CrawlStats, **options: Any
+) -> None:
+    with out_path.open("w", encoding="utf-8") as sink:
+        async with contextlib.aclosing(crawl([seed], stats=stats, **options)) as pages:
+            async for page in pages:
+                # Written as each page arrives; nothing piles up in memory.
+                sink.write(json.dumps(asdict(page), ensure_ascii=False) + "\n")
+                sink.flush()
+
+
+@app.command("crawl")
+def crawl_command(
+    seed: Annotated[str, typer.Argument(help="Where to start, an http(s) URL.")],
+    max_pages: Annotated[
+        int, typer.Option(min=1, help="Stop after this many HTML pages.")
+    ] = 500,
+    concurrency: Annotated[
+        int, typer.Option(min=1, help="Requests in flight at most, all hosts together.")
+    ] = 10,
+    per_host: Annotated[
+        int, typer.Option(min=1, help="Requests in flight at most to one host.")
+    ] = 2,
+    delay: Annotated[
+        float,
+        typer.Option(min=0.0, help="Seconds between request starts to one host."),
+    ] = 0.25,
+    out_path: Annotated[
+        Path, typer.Option("--out", "-o", help="JSON lines, one page per line.")
+    ] = Path("data/crawl.jsonl"),
+    log_path: Annotated[Path, typer.Option("--log", help="Per-URL status log.")] = Path(
+        "crawl.log"
+    ),
+    whole_host: Annotated[
+        bool,
+        typer.Option(
+            help="Follow links anywhere on the seed's host, not only under it."
+        ),
+    ] = False,
+    timeout: Annotated[
+        float, typer.Option(min=0.1, help="Seconds per request attempt.")
+    ] = 10.0,
+    debug: Annotated[
+        bool,
+        typer.Option(
+            help="asyncio debug mode: log anything blocking the loop > 100 ms."
+        ),
+    ] = False,
+    parse_in: Annotated[
+        Literal["threads", "processes"],
+        typer.Option(help="Where pages are parsed: never on the event loop."),
+    ] = "processes",
+) -> None:
+    """Crawl a site politely (robots.txt, per-host limits) into a .jsonl corpus."""
+    if canonical(seed) is None:
+        fail(f"not an http(s) URL: {seed}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    stats = CrawlStats()
+    started = time.perf_counter()
+    options: dict[str, Any] = {
+        "max_pages": max_pages,
+        "concurrency": concurrency,
+        "per_host": per_host,
+        "delay": delay,
+        "stay_under_seed": not whole_host,
+        "timeout": timeout,
+    }
+    log.info("crawling %s as %r", seed, USER_AGENT)
+    try:
+        with (
+            _crawl_log(log_path),
+            Live(
+                get_renderable=lambda: _live_stats(stats, max_pages, started),
+                console=err,
+                refresh_per_second=4,
+            ),
+            _parse_pool(parse_in) as pool,
+        ):
+            options["parse_pool"] = pool
+            asyncio.run(_crawl_to_file(seed, out_path, stats, **options), debug=debug)
+    except KeyboardInterrupt:
+        fail(f"interrupted after {stats.pages} pages (kept in {out_path})", code=130)
+    wall = time.perf_counter() - started
+
+    table = Table(title=f"Crawl of {escape(seed)}", show_header=False)
+    table.add_column(style="bold")
+    table.add_column(justify="right")
+    table.add_row("pages", f"{stats.pages:,}")
+    table.add_row("requests", f"{stats.requests:,}")
+    table.add_row("errors", f"{stats.errors:,}")
+    table.add_row("skipped", f"{stats.skipped:,}")
+    statuses = ", ".join(f"{k}: {v}" for k, v in sorted(stats.statuses.items()))
+    table.add_row("statuses", statuses or "-")
+    table.add_row("wall", f"{wall:.2f} s")
+    table.add_row("pages/s", f"{stats.pages / wall:.2f}")
+    table.add_row("peak RSS", f"{peak_rss() / 2**20:.0f} MiB")
+    table.add_row("written to", escape(str(out_path)))
+    table.add_row("log", escape(str(log_path)))
+    out.print(table)
+
+
 # --- findex stats ----------------------------------------------------------------
 
 
@@ -355,7 +582,7 @@ def stats_command(
     """Documents, tokens, vocabulary and the most frequent terms."""
     tracemalloc.start()
     started = time.perf_counter()
-    if path.is_dir():
+    if path.is_dir() or is_jsonl(path):
         source = f"corpus {path} ({'eager' if eager else 'lazy'})"
         stats = (eager_stats if eager else lazy_stats)(path, limit, top)
     elif path.is_file():

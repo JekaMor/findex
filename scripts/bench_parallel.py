@@ -12,7 +12,6 @@ interpreter it was started with.
 """
 
 import argparse
-import ctypes
 import json
 import os
 import platform
@@ -25,42 +24,9 @@ from pathlib import Path
 
 from findex.corpus import corpus_paths
 from findex.parallel import build_parallel, gil_enabled
+from findex.sysinfo import peak_rss
 
 WORKERS = [1, 2, 4, 8, os.cpu_count() or 1]
-
-
-def peak_rss() -> int:
-    """Peak resident memory of this process, in bytes."""
-    if sys.platform == "win32":
-
-        class Counters(ctypes.Structure):
-            _fields_ = [
-                ("cb", ctypes.c_ulong),
-                ("PageFaultCount", ctypes.c_ulong),
-                ("PeakWorkingSetSize", ctypes.c_size_t),
-                ("WorkingSetSize", ctypes.c_size_t),
-                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                ("PagefileUsage", ctypes.c_size_t),
-                ("PeakPagefileUsage", ctypes.c_size_t),
-            ]
-
-        counters = Counters()
-        counters.cb = ctypes.sizeof(Counters)
-        kernel32 = ctypes.windll.kernel32
-        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
-        kernel32.K32GetProcessMemoryInfo(
-            ctypes.c_void_p(kernel32.GetCurrentProcess()),
-            ctypes.byref(counters),
-            counters.cb,
-        )
-        return counters.PeakWorkingSetSize
-    import resource
-
-    kib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return kib if sys.platform == "darwin" else kib * 1024
 
 
 def one(corpus: Path, executor: str, workers: int) -> dict[str, object]:

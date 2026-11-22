@@ -26,6 +26,7 @@ class SearchResult:
     doc_id: int
     title: str = field(compare=False)
     path: str = field(compare=False)
+    url: str | None = field(default=None, compare=False)
 
     def __str__(self) -> str:
         return f"{self.score:7.3f}  {self.title}  ({Path(self.path).name})"
@@ -57,8 +58,7 @@ def search(
     # O(n log k): a heap of the k best so far, not a sort of all n matches.
     best = heapq.nlargest(k, scores.items(), key=itemgetter(1))
     return [
-        SearchResult(
-            score, doc_id, index.doc_meta[doc_id].title, index.doc_meta[doc_id].path
-        )
+        SearchResult(score, doc_id, meta.title, meta.path, meta.url)
         for doc_id, score in best
+        for meta in (index.doc_meta[doc_id],)
     ]

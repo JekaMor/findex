@@ -12,3 +12,5 @@ dist/
 .coverage
 htmlcov/
 .venv-*/
+# crawler output (the corpus itself lives in data/)
+/crawl.log
