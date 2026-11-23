@@ -18,7 +18,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install (Python version from .python-version, deps from uv.lock)
-        run: uv sync --locked
+        run: uv sync --locked --extra semantic  # pyright checks the fastembed calls too
       - name: ruff check
         run: uv run ruff check .
       - name: ruff format
