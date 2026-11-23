@@ -119,3 +119,26 @@ posting costs less than the fixed cost of a few NumPy calls (~40 µs). On the
 
 **CLI start-up.** The crawler (`asyncio`, `httpx`) is now imported inside
 `findex crawl` only.
+
+## Part 3 — under load, after adding semantic search
+
+The cProfile numbers above are per call in one thread. `oha` against the running
+server (`bench/oha-lab8-*.json`, 20 s, 50 connections) caught two things they did not.
+
+1. **Lab 7's 420 req/s was a cache benchmark.** Lab 7 kept the snippets in an
+   `lru_cache(2048)`, and the load test sent the same query (`white whale`) every
+   time. A query it had not seen cost 230 ms. With a mix of 225 different queries
+   (`--rand-regex-url`), Lab 7 serves **6 req/s** (p50 9.6 s); Lab 8 serves **223**
+   on one worker and **579** on four.
+2. **Rewriting the snippets dropped that cache.** The first Lab 8 run of the
+   fixed query got 77 req/s: every request read and searched 9 × 64 KB of text
+   (11 ms). The cache is back (`service.cached_snippet`, keyed by file, URL, terms
+   and passage, guarded by a lock since the routes run in a thread pool), and the
+   fixed query is at 293 req/s on one worker, 937 on four.
+
+One false lead is worth recording: a run with the embedding model loaded showed
+213 req/s against 501–557 without it. Alternating the two servers four times
+gave 565, 471, 584 and 553: no difference, the 213 was a laptop that had been
+under full load for minutes. The model and 34,429 × 384 embeddings cost 297 MB of
+working set per worker; a semantic query costs ~2.7 ms of ONNX inference and ~2.2 ms
+for `vectors @ q`.

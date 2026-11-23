@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # FilePath: a missing file fails validation when the app starts, not on
     # the first search.
     index_path: FilePath = Field(default=Path("index.bin"), validate_default=True)
+    # Passage embeddings for --mode semantic/hybrid; default: next to the index
+    # (index.bin -> index.emb.npy). Missing files just turn those modes off.
+    embeddings_path: Path | None = None
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     max_page_size: int = Field(default=50, ge=1, le=200)
     site_name: str = "findex"

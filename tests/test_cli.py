@@ -1,6 +1,7 @@
 """The ``findex`` command, driven through typer's CliRunner (stdout and stderr apart)."""
 
 import json
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,7 @@ def test_version() -> None:
     result = runner.invoke(app, ["--version"])
 
     assert result.exit_code == 0
-    assert result.stdout.startswith("findex 0.")
+    assert result.stdout.strip() == f"findex {version('findex')}"
 
 
 def test_index_builds_a_file(corpus_dir: Path, tmp_path: Path) -> None:

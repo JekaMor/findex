@@ -20,7 +20,11 @@ def precision_at_k(found: list[str], relevant: set[str], k: int = K) -> float:
 
 
 def main(index_path: Path, queries_path: Path) -> None:
-    queries = tomllib.loads(queries_path.read_text(encoding="utf-8"))["query"]
+    queries = [
+        q
+        for q in tomllib.loads(queries_path.read_text(encoding="utf-8"))["query"]
+        if not q.get("paraphrase")  # Lab 3 compared scorers on the first 10 only
+    ]
     totals = dict.fromkeys(SCORERS, 0.0)
     best_total = 0.0
     names = " | ".join(SCORERS)

@@ -28,6 +28,7 @@ class Hit(BaseModel):
 class SearchResponse(BaseModel):
     query: str
     parsed: str = Field(description="How the query was understood.")
+    mode: Literal["keyword", "semantic", "hybrid"]
     scorer: Literal["bm25", "tfidf"]
     page: int
     k: int

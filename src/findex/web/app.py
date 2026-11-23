@@ -25,6 +25,7 @@ from findex.corpus import document_text
 from findex.model import Index
 from findex.query import QueryError, parse
 from findex.search import ScorerName
+from findex.semantic import Mode, Passages, Semantic, default_prefix
 from findex.snippets import Part, first_hit, highlight_parts
 from findex.store import open_index
 from findex.web import models
@@ -50,9 +51,36 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             (time.perf_counter() - started) * 1000,
             index,
         )
+        app.state.semantic = _load_semantic(settings, index)
         yield
         app.state.index = None
+        app.state.semantic = None
     log.info("index closed")
+
+
+def _load_semantic(settings: Settings, index: Index) -> Semantic | None:
+    """Passages and the model, when the embeddings exist and the optional
+    ``semantic`` extra is installed; otherwise the semantic modes are off."""
+    prefix = settings.embeddings_path or default_prefix(settings.index_path)
+    if not Path(f"{prefix}.npy").is_file():
+        log.info("no embeddings at %s: keyword search only", prefix)
+        return None
+    started = time.perf_counter()
+    try:
+        passages = Passages.load(prefix, index)
+        from findex.semantic import FastEmbedder
+
+        semantic = Semantic(passages, FastEmbedder(passages.model))
+    except (ImportError, ValueError) as exc:
+        log.warning("semantic search off: %s", exc)
+        return None
+    log.info(
+        "%d passages and %s loaded in %.0f ms",
+        passages.doc_ids.size,
+        passages.model,
+        (time.perf_counter() - started) * 1000,
+    )
+    return semantic
 
 
 def get_index(request: Request) -> Index:
@@ -62,8 +90,14 @@ def get_index(request: Request) -> Index:
     return index
 
 
+def get_semantic(request: Request) -> Semantic | None:
+    semantic: Semantic | None = getattr(request.app.state, "semantic", None)
+    return semantic
+
+
 IndexDep = Annotated[Index, Depends(get_index)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+SemanticDep = Annotated[Semantic | None, Depends(get_semantic)]
 
 
 def create_app() -> FastAPI:
@@ -122,9 +156,19 @@ K = Annotated[int, Query(ge=1, le=50, description="Results per page.")]
 PageNo = Annotated[int, Query(ge=1, le=100, description="1-based page number.")]
 
 
-def _found(index: Index, q: str, scorer: ScorerName, k: int, page: int) -> Page:
+def _found(
+    index: Index,
+    q: str,
+    scorer: ScorerName,
+    k: int,
+    page: int,
+    mode: Mode,
+    semantic: Semantic | None,
+) -> Page:
+    if mode != "keyword" and semantic is None:
+        raise HTTPException(503, f"{mode} search is not available on this server")
     try:
-        return search_page(index, q, scorer, k, page)
+        return search_page(index, q, scorer, k, page, mode, semantic)
     except QueryError as exc:
         raise HTTPException(422, f"bad query: {exc}") from exc
 
@@ -133,16 +177,23 @@ def _api_routes(app: FastAPI) -> None:
     @app.get("/search", response_model=models.SearchResponse, tags=["api"])
     def search_api(  # def, not async def: scoring is CPU work (see README, Lab 7)
         index: IndexDep,
+        semantic: SemanticDep,
         q: Q,
         k: K = 10,
+        mode: Mode = "keyword",
         scorer: ScorerName = "bm25",
         page: PageNo = 1,
     ) -> models.SearchResponse:
-        """Ranked results for ``q``, ``k`` per page."""
-        found = _found(index, q, scorer, k, page)
+        """Ranked results for ``q``, ``k`` per page.
+
+        ``mode``: ``keyword`` (BM25 over the Boolean query), ``semantic``
+        (embeddings, best passage per document) or ``hybrid`` (both, fused
+        with Reciprocal Rank Fusion)."""
+        found = _found(index, q, scorer, k, page, mode, semantic)
         return models.SearchResponse(
             query=found.query,
-            parsed=str(found.node),
+            parsed=found.parsed,
+            mode=found.mode,
             scorer=found.scorer,
             page=found.page,
             k=found.k,
@@ -230,15 +281,19 @@ def _page_routes(app: FastAPI) -> None:
         request: Request,
         index: IndexDep,
         settings: SettingsDep,
+        semantic: SemanticDep,
         q: Annotated[str, Query(max_length=200)] = "",
+        mode: Mode = "keyword",
         scorer: ScorerName = "bm25",
         page: Annotated[int, Query(ge=1, le=100)] = 1,
     ) -> HTMLResponse:
         found: Page | None = None
         error: str | None = None
+        if mode != "keyword" and semantic is None:
+            mode = "keyword"
         if q.strip():
             try:
-                found = search_page(index, q, scorer, 10, page)
+                found = search_page(index, q, scorer, 10, page, mode, semantic)
             except QueryError as exc:
                 error = str(exc)
         return templates.TemplateResponse(
@@ -246,6 +301,10 @@ def _page_routes(app: FastAPI) -> None:
             "search.html",
             {
                 "q": q,
+                "mode": mode,
+                "modes": ("keyword", "semantic", "hybrid")
+                if semantic
+                else ("keyword",),
                 "scorer": scorer,
                 "found": found,
                 "error": error,

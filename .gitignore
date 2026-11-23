@@ -14,3 +14,7 @@ htmlcov/
 .venv-*/
 # crawler output (the corpus itself lives in data/)
 /crawl.log
+# embeddings (built by findex embed)
+*.emb.npy
+*.emb.chunks.npy
+*.emb.json

@@ -6,16 +6,46 @@ thread pool instead of on the event loop.
 """
 
 import math
+import threading
 import time
 import unicodedata
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
 from findex.corpus import document_text
 from findex.model import Index
-from findex.query import Node, parse
-from findex.search import SCORERS, ScorerName, SearchResult, search
-from findex.snippets import Part, snippet_for
+from findex.query import parse
+from findex.search import SCORERS, ScorerName, SearchResult
+from findex.semantic import Found, Mode, Semantic, find, found_snippet, query_terms
+from findex.snippets import Part
+
+SNIPPET_CACHE = 2048
+
+type _SnippetKey = tuple[str, str | None, frozenset[str], int | None]
+_snippets: OrderedDict[_SnippetKey, tuple[Part, ...]] = OrderedDict()
+_snippets_lock = threading.Lock()  # the routes run in a thread pool
+
+
+def cached_snippet(
+    index: Index, found: Found, terms: frozenset[str], semantic: Semantic | None
+) -> tuple[Part, ...]:
+    """``found_snippet``, remembered for the last ``SNIPPET_CACHE`` (file, URL,
+    terms, passage) keys: a popular query costs its snippets once.
+    Lab 7 had the same cache; without it the server does ~10 ms of file
+    reading per request."""
+    key = (found.result.path, found.result.url, terms, found.passage)
+    with _snippets_lock:
+        parts = _snippets.get(key)
+        if parts is not None:
+            _snippets.move_to_end(key)
+            return parts
+    parts = tuple(found_snippet(index, found, terms, semantic))
+    with _snippets_lock:
+        _snippets[key] = parts
+        if len(_snippets) > SNIPPET_CACHE:
+            _snippets.popitem(last=False)
+    return parts
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +62,8 @@ class FoundHit:
 @dataclass(frozen=True, slots=True)
 class Page:
     query: str
-    node: Node
+    parsed: str  # how the query was read (keyword mode), or the mode's name
+    mode: Mode
     scorer: ScorerName
     page: int
     k: int
@@ -46,21 +77,27 @@ class Page:
 
 
 def search_page(
-    index: Index, query: str, scorer: ScorerName, k: int, page: int
+    index: Index,
+    query: str,
+    scorer: ScorerName,
+    k: int,
+    page: int,
+    mode: Mode = "keyword",
+    semantic: Semantic | None = None,
 ) -> Page:
-    """Results ``(page - 1) * k + 1`` to ``page * k``. Raises ``QueryError``."""
+    """Results ``(page - 1) * k + 1`` to ``page * k``. Raises ``QueryError`` (bad
+    keyword syntax) and ``ValueError`` (a semantic mode without embeddings)."""
     started = time.perf_counter()
-    node = parse(query)
-    total = len(index.match(node))  # cached in the index: search() reuses it
-    best = search(index, node, SCORERS[scorer], k=page * k)
-    terms = frozenset(node.terms())
+    found, total = find(index, query, mode, page * k, SCORERS[scorer], semantic)
+    parsed = str(parse(query)) if mode == "keyword" else f"{mode} search"
+    terms = query_terms(query)
     first = (page - 1) * k
     hits = tuple(
-        FoundHit(first + i + 1, r, tuple(snippet_for(index, r.doc_id, terms)))
-        for i, r in enumerate(best[first:])
+        FoundHit(first + i + 1, f.result, cached_snippet(index, f, terms, semantic))
+        for i, f in enumerate(found[first:])
     )
     took = (time.perf_counter() - started) * 1000
-    return Page(query, node, scorer, page, k, total, hits, took)
+    return Page(query, parsed, mode, scorer, page, k, total, hits, took)
 
 
 def snippet_text(parts: tuple[Part, ...]) -> tuple[str, list[tuple[int, int]]]:

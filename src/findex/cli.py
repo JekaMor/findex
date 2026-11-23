@@ -50,14 +50,25 @@ from findex.index import build_index
 from findex.model import Index
 from findex.parallel import ExecutorName, build_parallel, gil_enabled
 from findex.query import Node, QueryError, parse
-from findex.search import SCORERS, ScorerName, SearchResult, search
-from findex.snippets import Part, snippet_for
+from findex.search import SCORERS, ScorerName, search
+from findex.semantic import (
+    Found,
+    Mode,
+    Passages,
+    Semantic,
+    default_prefix,
+    find,
+    found_snippet,
+    query_terms,
+)
+from findex.snippets import Part
 from findex.stats import Stats, eager_stats, index_stats, lazy_stats
 from findex.store import Format, IndexFormatError, open_index, save
 from findex.sysinfo import peak_rss
 
 if TYPE_CHECKING:
     from findex.crawler import CrawlStats
+    from findex.semantic import Embedder
 
 # The crawler (asyncio, httpx) is imported inside `findex crawl` only: profiling
 # showed it was a third of the start-up time of every other command.
@@ -272,6 +283,65 @@ def _advancing(
         progress.advance(task)
 
 
+# --- findex embed ------------------------------------------------------------------
+
+
+@app.command("embed")
+def embed_command(
+    index_path: Annotated[Path, typer.Argument(metavar="INDEX", help="An index file.")],
+    out_prefix: Annotated[
+        Path | None,
+        typer.Option(
+            "--out", help="Default: the index path with .emb instead of its suffix."
+        ),
+    ] = None,
+    words: Annotated[int, typer.Option(min=20, help="Words per passage.")] = 200,
+    model: Annotated[
+        str, typer.Option(help="A fastembed model name.")
+    ] = "sentence-transformers/all-MiniLM-L6-v2",
+) -> None:
+    """Cut documents into passages and embed them, for --mode semantic / hybrid."""
+    from findex.semantic import default_prefix, embed_index
+
+    prefix = out_prefix or default_prefix(index_path)
+    embedder = _embedder(model)
+    if not index_path.is_file():
+        fail(f"index file not found: {index_path}")
+    started = time.perf_counter()
+    with (
+        open_index(index_path) as index,
+        Progress(
+            "[progress.description]{task.description}",
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=err,
+        ) as progress,
+    ):
+        task = progress.add_task("embedding", total=None)
+        count = embed_index(
+            index,
+            embedder,
+            prefix,
+            words,
+            on_start=lambda total: progress.update(task, total=total),
+            on_batch=lambda n: progress.advance(task, n),
+        )
+    took = time.perf_counter() - started
+    out.print(
+        f"{count:,} passages embedded with {embedder.name} in {took:.0f} s -> {prefix}.npy"
+    )
+
+
+def _embedder(model: str) -> Embedder:
+    try:
+        from findex.semantic import FastEmbedder
+
+        return FastEmbedder(model)
+    except ImportError:
+        fail("semantic search needs the optional extra: pip install 'findex[semantic]'")
+
+
 # --- findex search ---------------------------------------------------------------
 
 
@@ -285,16 +355,6 @@ def _parse_all(queries: list[str]) -> list[Node]:
     return nodes
 
 
-def _snippet_parts(
-    index: Index, result: SearchResult, terms: set[str]
-) -> list[Part] | None:
-    parts = snippet_for(index, result.doc_id, terms)
-    if parts == [("(text not available)", False)]:
-        log.warning("no snippet for %s: file not found", result.url or result.path)
-        return None
-    return parts
-
-
 def _as_text(parts: list[Part] | None) -> Text:
     if parts is None:
         return Text("—", style="dim")
@@ -304,33 +364,55 @@ def _as_text(parts: list[Part] | None) -> Text:
 
 
 def _results_table(
-    index: Index, query: str, node: Node, results: list[SearchResult], snippets: bool
+    index: Index,
+    query: str,
+    caption: str,
+    found: list[Found],
+    terms: frozenset[str],
+    snippets: bool,
+    semantic: Semantic | None,
 ) -> Table:
     table = Table(
-        title=f"[bold]{escape(query)}[/]", caption=escape(str(node)), expand=True
+        title=f"[bold]{escape(query)}[/]", caption=escape(caption), expand=True
     )
     table.add_column("#", justify="right", style="dim", no_wrap=True)
     table.add_column("score", justify="right", no_wrap=True)
     table.add_column("document", ratio=1)
     if snippets:
         table.add_column("snippet", ratio=3)
-    terms = set(node.terms())
-    for rank, result in enumerate(results, 1):
+    for rank, hit in enumerate(found, 1):
+        result = hit.result
         where = result.url or Path(result.path).name
         title = Text.assemble(result.title, "\n", (where, "dim"))
         row: list[str | Text] = [str(rank), f"{result.score:.3f}", title]
         if snippets:
-            row.append(_as_text(_snippet_parts(index, result, terms)))
+            row.append(_as_text(_snippet(index, hit, terms, semantic)))
         table.add_row(*row)
     return table
 
 
+def _snippet(
+    index: Index, hit: Found, terms: frozenset[str], semantic: Semantic | None
+) -> list[Part] | None:
+    parts = found_snippet(index, hit, terms, semantic)
+    if parts == [("(text not available)", False)]:
+        result = hit.result
+        log.warning("no snippet for %s: file not found", result.url or result.path)
+        return None
+    return parts
+
+
 def _json_records(
-    index: Index, query: str, node: Node, results: list[SearchResult], snippets: bool
+    index: Index,
+    query: str,
+    found: list[Found],
+    terms: frozenset[str],
+    snippets: bool,
+    semantic: Semantic | None,
 ) -> Iterator[ResultRecord]:
-    terms = set(node.terms())
-    for rank, result in enumerate(results, 1):
-        parts = _snippet_parts(index, result, terms) if snippets else None
+    for rank, hit in enumerate(found, 1):
+        result = hit.result
+        parts = _snippet(index, hit, terms, semantic) if snippets else None
         yield {
             "query": query,
             "rank": rank,
@@ -354,10 +436,20 @@ def search_command(
         ),
     ],
     k: Annotated[int, typer.Option("--k", "-k", min=1, help="How many results.")] = 10,
+    mode: Annotated[
+        Mode,
+        typer.Option(
+            help="keyword: BM25 over the query; semantic: embeddings; hybrid: both, RRF."
+        ),
+    ] = "keyword",
     scorer: Annotated[ScorerName, typer.Option(help="Ranking function.")] = "bm25",
     engine: Annotated[
         EngineName, typer.Option(help="How Boolean operators are computed.")
     ] = "merge",
+    embeddings: Annotated[
+        Path | None,
+        typer.Option(help="Embeddings prefix (default: the index path with .emb)."),
+    ] = None,
     as_json: Annotated[
         bool, typer.Option("--json", help="JSON lines on stdout instead of a table.")
     ] = False,
@@ -366,38 +458,67 @@ def search_command(
     ] = True,
 ) -> None:
     """Search an index; several queries can be given at once."""
-    nodes = _parse_all(queries)  # bad syntax fails before the index is opened
+    if mode == "keyword":
+        _parse_all(queries)  # bad syntax fails before the index is opened
     if not index_path.is_file():
         fail(f"index file not found: {index_path}")
     try:
         with open_index(index_path) as index:
             log.info("opened %r", index)
-            for query, node in zip(queries, nodes, strict=True):
-                _run_query(index, query, node, scorer, k, engine, as_json, snippets)
+            semantic = None
+            if mode != "keyword":
+                semantic = _load_semantic(
+                    index, embeddings or default_prefix(index_path)
+                )
+            for query in queries:
+                _run_query(
+                    index, query, mode, scorer, k, engine, as_json, snippets, semantic
+                )
     except IndexFormatError as exc:
         fail(str(exc))
+
+
+def _load_semantic(index: Index, prefix: Path) -> Semantic:
+    if not Path(f"{prefix}.npy").is_file():
+        fail(f"no embeddings at {prefix}.npy: run `findex embed` first")
+    try:
+        passages = Passages.load(prefix, index)
+    except ValueError as exc:
+        fail(f"embeddings at {prefix} do not fit this index: {exc}")
+    return Semantic(passages, _embedder(passages.model))
 
 
 def _run_query(
     index: Index,
     query: str,
-    node: Node,
+    mode: Mode,
     scorer: ScorerName,
     k: int,
     engine: EngineName,
     as_json: bool,
     snippets: bool,
+    semantic: Semantic | None,
 ) -> None:
     try:
-        results = search(index, node, SCORERS[scorer], k, engine)
+        if mode == "keyword":
+            node = parse(query)
+            results = search(index, node, SCORERS[scorer], k, engine)
+            found = [Found(r, None) for r in results]
+            caption = str(node)
+        else:
+            found, _ = find(index, query, mode, k, SCORERS[scorer], semantic)
+            caption = f"{mode} search"
     except QueryError as exc:  # e.g. a phrase on an index without positions
         fail(f"cannot run {query!r}: {exc}", code=2)
+    terms = query_terms(query)
     if as_json:
-        for record in _json_records(index, query, node, results, snippets):
+        for record in _json_records(index, query, found, terms, snippets, semantic):
             sys.stdout.write(json.dumps(record) + "\n")
         sys.stdout.flush()
-    elif results:
-        out.print(_results_table(index, query, node, results, snippets))
+    elif found:
+        out.print(
+            _results_table(index, query, caption, found, terms, snippets, semantic)
+        )
     else:
         out.print(f"[bold]{escape(query)}[/]: nothing found")
 

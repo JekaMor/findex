@@ -27,6 +27,17 @@ jobs:
         run: uv run pyright
       - name: pytest
         run: uv run pytest --cov --cov-report=term
+      - name: Benchmarks (timed; the table goes to the run summary)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          uv run pytest tests/test_benchmarks.py --benchmark-enable --benchmark-only --benchmark-json=benchmark.json -p no:cacheprovider
+          uv run python scripts/benchmark_summary.py benchmark.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the benchmark numbers
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark
+          path: benchmark.json
       - name: Build the wheel and run it in a clean environment
         shell: bash
         run: |
@@ -63,6 +74,8 @@ jobs:
           curl -fs "localhost:8000/search?q=white+whale&k=3" \
             | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['total'] > 0, d; print(d['results'][0]['title'])"
           curl -fs -o /dev/null "localhost:8000/?q=white+whale"
+          curl -fs "localhost:8000/search?q=an+undead+nobleman+who+feeds+on+the+living&mode=semantic&k=3" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['results'], d; print(d['mode'], d['results'][0]['title'])"
+          docker stats --no-stream findex
           test "$(docker exec findex id -u)" != "0"
           docker logs findex
       - name: A bad INDEX_PATH stops it at start-up

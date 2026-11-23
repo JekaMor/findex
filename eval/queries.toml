@@ -74,3 +74,41 @@ q = "war OR army OR napoleon"
 relevant = [
     "pg2600.txt",  # War and Peace
 ]
+
+# --- Paraphrases (Lab 8): describe a book without its key words, so keyword
+# search has little to hold on to and semantic search has to do the work.
+
+[[query]]
+q = "an obsessed sailor chasing an enormous sea mammal across the oceans"
+paraphrase = true
+relevant = [
+    "pg2701.txt",  # Moby Dick (no "whale", no "Ahab")
+]
+
+[[query]]
+q = "an undead nobleman who feeds on the living and sleeps in his grave by day"
+paraphrase = true
+relevant = [
+    "pg345.txt",   # Dracula (no "vampire", no "blood", no "count")
+]
+
+[[query]]
+q = "a student stitches together a body from corpses and brings it to life"
+paraphrase = true
+relevant = [
+    "pg84.txt",    # Frankenstein (no "monster", no "creature")
+]
+
+[[query]]
+q = "beings from another world land in the English countryside and destroy everything"
+paraphrase = true
+relevant = [
+    "pg36.txt",    # The War of the Worlds (no "martians", no "heat-ray")
+]
+
+[[query]]
+q = "a boy escapes his drunken father and travels downstream with a fugitive"
+paraphrase = true
+relevant = [
+    "pg76.txt",    # Huckleberry Finn (no "raft", no "Jim", no "slave")
+]
