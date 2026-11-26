@@ -3,7 +3,7 @@
 **Пошуковий рушій, написаний з нуля на Python: потоковий токенізатор, інвертований
 індекс, BM25 на NumPy, мова запитів, семантичний і гібридний пошук, вебсервіс.**
 
-**Спробувати: https://findex-n3kg.onrender.com** · [API](https://findex-n3kg.onrender.com/docs) · [![CI](https://github.com/JekaMor/findex/actions/workflows/ci.yml/badge.svg)](https://github.com/JekaMor/findex/actions/workflows/ci.yml)
+**Спробувати: https://findex-n3kg.onrender.com** · [API](https://findex-n3kg.onrender.com/docs) · [**відео-демо (2,5 хв)**](https://youtu.be/AyfAjvD8zYU) · [![CI](https://github.com/JekaMor/findex/actions/workflows/ci.yml/badge.svg)](https://github.com/JekaMor/findex/actions/workflows/ci.yml)
 
 ![Пошук на живому сайті](docs/demo.gif)
 
